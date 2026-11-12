@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/lockbox-crypto", "crates/lockbox-protocol", "crates/lockbox-server"]
+members = ["crates/lockbox-client","crates/lockbox-crypto", "crates/lockbox-protocol", "crates/lockbox-server"]
 
 [workspace.package]
 version = "0.1.0"

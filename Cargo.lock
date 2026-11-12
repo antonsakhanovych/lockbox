@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "lockbox-client"
+version = "0.1.0"
+
+[[package]]
 name = "lockbox-crypto"
 version = "0.1.0"
 
