@@ -1,0 +1,6 @@
+[package]
+name = "lockbox-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

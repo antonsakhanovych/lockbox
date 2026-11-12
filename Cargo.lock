@@ -9,3 +9,7 @@ version = "0.1.0"
 [[package]]
 name = "lockbox-protocol"
 version = "0.1.0"
+
+[[package]]
+name = "lockbox-server"
+version = "0.1.0"
