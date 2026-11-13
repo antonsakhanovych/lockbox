@@ -25,6 +25,12 @@ pub enum CryptoError {
 
     #[error("public key encoding error: {0}")]
     Spki(#[from] ed25519_dalek::pkcs8::spki::Error),
+
+    #[error("encryption failed")]
+    Encryption,
+
+    #[error("decryption failed: wrong key or tampered data")]
+    Decryption,
 }
 
 pub type Result<T> = std::result::Result<T, CryptoError>;
