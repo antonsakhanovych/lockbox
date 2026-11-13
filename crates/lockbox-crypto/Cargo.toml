@@ -4,3 +4,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
+rand = "0.10.3"
