@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 #[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
     #[error("malformed key: {0}")]
@@ -8,6 +10,18 @@ pub enum CryptoError {
 
     #[error("invalid base64: {0}")]
     Base64(#[from] base64::DecodeError),
+
+    #[error("i/o error on {}: {source}", path.display())]
+    FileIo {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("private key encoding error: {0}")]
+    Pkcs8(#[from] ed25519_dalek::pkcs8::Error),
+
+    #[error("public key encoding error: {0}")]
+    Spki(#[from] ed25519_dalek::pkcs8::spki::Error),
 }
 
 pub type Result<T> = std::result::Result<T, CryptoError>;

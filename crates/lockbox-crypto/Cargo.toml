@@ -5,6 +5,9 @@ edition.workspace = true
 
 [dependencies]
 base64 = "0.23.1"
-ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
+ed25519-dalek = { version = "3.0.0", features = ["rand_core", "pem"] }
 rand = "0.10.3"
 thiserror = "2.0.21"
+
+[dev-dependencies]
+tempfile = "3.27.0"
