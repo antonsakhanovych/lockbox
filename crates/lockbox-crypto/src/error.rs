@@ -5,6 +5,9 @@ pub enum CryptoError {
     #[error("malformed key: {0}")]
     InvalidKey(#[from] ed25519_dalek::SignatureError),
 
+    #[error("signature verification failed")]
+    InvalidSignature,
+
     #[error("expected {expected} bytes, found {actual}")]
     WrongLength { expected: usize, actual: usize },
 
