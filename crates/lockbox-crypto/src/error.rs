@@ -43,6 +43,12 @@ pub enum CryptoError {
 
     #[error("this key is not a recipient of the envelope")]
     NotARecipient,
+
+    #[error("envelope is truncated or malformed")]
+    MalformedEnvelope,
+
+    #[error("unsupported envelope version {0}")]
+    UnsupportedVersion(u16),
 }
 
 pub type Result<T> = std::result::Result<T, CryptoError>;
