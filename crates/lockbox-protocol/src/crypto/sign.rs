@@ -1,4 +1,4 @@
-use crate::{
+use crate::crypto::{
     CryptoError, Result,
     domain::{self, prepend_domain},
 };

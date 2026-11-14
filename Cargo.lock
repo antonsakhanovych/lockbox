@@ -277,7 +277,7 @@ name = "lockbox-client"
 version = "0.1.0"
 
 [[package]]
-name = "lockbox-crypto"
+name = "lockbox-protocol"
 version = "0.1.0"
 dependencies = [
  "base64",
@@ -290,10 +290,6 @@ dependencies = [
  "thiserror",
  "zeroize",
 ]
-
-[[package]]
-name = "lockbox-protocol"
-version = "0.1.0"
 
 [[package]]
 name = "lockbox-server"

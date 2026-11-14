@@ -1,6 +1,6 @@
-use lockbox_crypto::envelope::{ENVELOPE_VERSION, Envelope, MAX_RECIPIENTS};
-use lockbox_crypto::keys::generate_keypair;
-use lockbox_crypto::{CryptoError, SigningKey, VerifyingKey};
+use lockbox_protocol::crypto::envelope::{ENVELOPE_VERSION, Envelope, MAX_RECIPIENTS};
+use lockbox_protocol::crypto::keys::generate_keypair;
+use lockbox_protocol::crypto::{CryptoError, SigningKey, VerifyingKey};
 
 const HEADER_LEN: usize = 2 + 24 + 2;
 const ENTRY_LEN: usize = 32 + 32 + 24 + 48;

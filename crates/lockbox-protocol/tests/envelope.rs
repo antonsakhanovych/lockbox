@@ -1,6 +1,6 @@
-use lockbox_crypto::envelope::{Envelope, MAX_RECIPIENTS};
-use lockbox_crypto::keys::generate_keypair;
-use lockbox_crypto::{CryptoError, SigningKey, VerifyingKey};
+use lockbox_protocol::crypto::envelope::{Envelope, MAX_RECIPIENTS};
+use lockbox_protocol::crypto::keys::generate_keypair;
+use lockbox_protocol::crypto::{CryptoError, SigningKey, VerifyingKey};
 
 fn recipients(count: usize) -> (Vec<SigningKey>, Vec<VerifyingKey>) {
     let secrets: Vec<SigningKey> = (0..count).map(|_| generate_keypair()).collect();
@@ -79,7 +79,7 @@ fn an_envelope_does_not_open_for_another_envelopes_recipient() {
 
 #[test]
 fn a_recipient_loaded_from_a_key_file_can_decrypt() {
-    use lockbox_crypto::keys::{
+    use lockbox_protocol::crypto::keys::{
         load_public_key, load_secret_key, save_public_key, save_secret_key,
     };
 

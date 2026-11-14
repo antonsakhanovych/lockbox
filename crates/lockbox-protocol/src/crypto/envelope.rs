@@ -20,9 +20,9 @@
 //! the plaintext on.
 //!
 //! ```
-//! # fn main() -> Result<(), lockbox_crypto::CryptoError> {
-//! use lockbox_crypto::envelope::Envelope;
-//! use lockbox_crypto::keys::generate_keypair;
+//! # fn main() -> Result<(), lockbox_protocol::crypto::CryptoError> {
+//! use lockbox_protocol::crypto::envelope::Envelope;
+//! use lockbox_protocol::crypto::keys::generate_keypair;
 //!
 //! let alice = generate_keypair();
 //! let bob = generate_keypair();
@@ -45,7 +45,7 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::{
+use crate::crypto::{
     CryptoError, Result, domain,
     symmetric::{KEY_LEN, NONCE_LEN, Nonce, SymmetricKey, TAG_LEN},
 };

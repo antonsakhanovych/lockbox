@@ -1,7 +1,7 @@
 use std::os::unix::fs::PermissionsExt;
 
-use lockbox_crypto::CryptoError;
-use lockbox_crypto::keys::{
+use lockbox_protocol::crypto::CryptoError;
+use lockbox_protocol::crypto::keys::{
     generate_keypair, load_public_key, load_secret_key, save_public_key, save_secret_key,
 };
 

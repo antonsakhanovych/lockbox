@@ -15,7 +15,7 @@ use ed25519_dalek::{
     },
 };
 
-use crate::{CryptoError, Result};
+use crate::crypto::{CryptoError, Result};
 
 const PUBLIC_FILE_MODE: u32 = 0o644;
 const SECRET_FILE_MODE: u32 = 0o600;

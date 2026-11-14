@@ -4,7 +4,7 @@ use chacha20poly1305::{
 };
 use zeroize::Zeroizing;
 
-use crate::{CryptoError, Result};
+use crate::crypto::{CryptoError, Result};
 
 pub(crate) const KEY_LEN: usize = 32;
 pub(crate) const NONCE_LEN: usize = 24;

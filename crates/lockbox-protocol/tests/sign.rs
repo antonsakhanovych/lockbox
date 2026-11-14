@@ -1,7 +1,7 @@
 use ed25519_dalek::Signer;
-use lockbox_crypto::keys::generate_keypair;
-use lockbox_crypto::sign::{sign, verify};
-use lockbox_crypto::{CryptoError, Signature};
+use lockbox_protocol::crypto::keys::generate_keypair;
+use lockbox_protocol::crypto::sign::{sign, verify};
+use lockbox_protocol::crypto::{CryptoError, Signature};
 
 #[test]
 fn a_valid_signature_verifies() {

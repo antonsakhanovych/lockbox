@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use lockbox_crypto::keys::{decode_public_key, encode_public_key, generate_keypair};
-use lockbox_crypto::{CryptoError, SigningKey};
+use lockbox_protocol::crypto::keys::{decode_public_key, encode_public_key, generate_keypair};
+use lockbox_protocol::crypto::{CryptoError, SigningKey};
 
 #[test]
 fn two_generated_keys_differ() {
