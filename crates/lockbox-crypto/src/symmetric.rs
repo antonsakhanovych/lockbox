@@ -10,6 +10,8 @@ pub(crate) const KEY_LEN: usize = 32;
 pub(crate) const NONCE_LEN: usize = 24;
 pub(crate) const TAG_LEN: usize = 16;
 
+pub(crate) type Nonce = [u8; NONCE_LEN];
+
 pub(crate) struct SymmetricKey(Zeroizing<[u8; KEY_LEN]>);
 
 impl SymmetricKey {
@@ -19,7 +21,7 @@ impl SymmetricKey {
         Self(bytes)
     }
 
-    pub(crate) fn encrypt(&self, msg: &[u8], aad: &[u8]) -> Result<([u8; NONCE_LEN], Vec<u8>)> {
+    pub(crate) fn encrypt(&self, msg: &[u8], aad: &[u8]) -> Result<(Nonce, Vec<u8>)> {
         let mut nonce = [0u8; NONCE_LEN];
         rand::fill(&mut nonce[..]);
         let ciphertext = self
@@ -29,12 +31,7 @@ impl SymmetricKey {
         Ok((nonce, ciphertext))
     }
 
-    pub(crate) fn decrypt(
-        &self,
-        nonce: &[u8; NONCE_LEN],
-        ciphertext: &[u8],
-        aad: &[u8],
-    ) -> Result<Vec<u8>> {
+    pub(crate) fn decrypt(&self, nonce: &Nonce, ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
         self.cipher()
             .decrypt(
                 &XNonce::from(*nonce),
