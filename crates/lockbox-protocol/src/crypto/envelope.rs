@@ -69,15 +69,22 @@ type SealedKey = [u8; KEY_LEN + TAG_LEN];
 /// Bytes before the first entry: version, file nonce and recipient count.
 const HEADER_LEN: usize = 2 + NONCE_LEN + 2;
 
-/// A file encrypted for several recipients. It holds no secrets.
+/// Everything in an envelope except the encrypted file. It holds no secrets.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Envelope {
+pub struct EnvelopeHeader {
     /// Format number, see `ENVELOPE_VERSION`.
     version: u16,
     /// Nonce for the file encryption.
     nonce: Nonce,
     /// One entry per distinct recipient, in the order given.
     recipients: Vec<WrappedKey>,
+}
+
+/// A file encrypted for several recipients. It holds no secrets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Envelope {
+    /// Who can open it and how.
+    header: EnvelopeHeader,
     /// The encrypted file. The last 16 bytes are the tag.
     ciphertext: Vec<u8>,
 }
@@ -110,9 +117,11 @@ impl Envelope {
             .map(|recipient| WrappedKey::seal(&data_key, recipient))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
-            version: ENVELOPE_VERSION,
-            nonce,
-            recipients,
+            header: EnvelopeHeader {
+                version: ENVELOPE_VERSION,
+                nonce,
+                recipients,
+            },
             ciphertext,
         })
     }
@@ -124,12 +133,17 @@ impl Envelope {
     pub fn decrypt(&self, key: &SigningKey) -> Result<Vec<u8>> {
         let own = key.verifying_key();
         let wrapped_key = self
+            .header
             .recipients
             .iter()
             .find(|&wrapped| wrapped.recipient == own)
             .ok_or(CryptoError::NotARecipient)?;
         let data_key = wrapped_key.open(key)?;
-        data_key.decrypt(&self.nonce, &self.ciphertext, &Self::aad(ENVELOPE_VERSION))
+        data_key.decrypt(
+            &self.header.nonce,
+            &self.ciphertext,
+            &Self::aad(ENVELOPE_VERSION),
+        )
     }
 
     /// The envelope as bytes, ready to store or send. All numbers are big
@@ -141,12 +155,12 @@ impl Envelope {
     /// ```
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(
-            HEADER_LEN + self.recipients.len() * WrappedKey::LEN + self.ciphertext.len(),
+            HEADER_LEN + self.header.recipients.len() * WrappedKey::LEN + self.ciphertext.len(),
         );
-        bytes.extend_from_slice(&self.version.to_be_bytes());
-        bytes.extend_from_slice(&self.nonce);
-        bytes.extend_from_slice(&(self.recipients.len() as u16).to_be_bytes());
-        for wrapped in &self.recipients {
+        bytes.extend_from_slice(&self.header.version.to_be_bytes());
+        bytes.extend_from_slice(&self.header.nonce);
+        bytes.extend_from_slice(&(self.header.recipients.len() as u16).to_be_bytes());
+        for wrapped in &self.header.recipients {
             wrapped.write_to(&mut bytes);
         }
         bytes.extend_from_slice(&self.ciphertext);
@@ -179,9 +193,11 @@ impl Envelope {
             return Err(CryptoError::MalformedEnvelope);
         }
         Ok(Self {
-            version,
-            nonce,
-            recipients,
+            header: EnvelopeHeader {
+                version,
+                nonce,
+                recipients,
+            },
             ciphertext: ciphertext.to_vec(),
         })
     }
