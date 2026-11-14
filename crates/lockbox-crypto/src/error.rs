@@ -38,6 +38,9 @@ pub enum CryptoError {
     #[error("at least one recipient is required")]
     NoRecipients,
 
+    #[error("{count} recipients exceeds the limit of {max}")]
+    TooManyRecipients { count: usize, max: usize },
+
     #[error("this key is not a recipient of the envelope")]
     NotARecipient,
 }

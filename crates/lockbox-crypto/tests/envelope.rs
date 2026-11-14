@@ -1,4 +1,4 @@
-use lockbox_crypto::envelope::Envelope;
+use lockbox_crypto::envelope::{Envelope, MAX_RECIPIENTS};
 use lockbox_crypto::keys::generate_keypair;
 use lockbox_crypto::{CryptoError, SigningKey, VerifyingKey};
 
@@ -92,4 +92,48 @@ fn a_recipient_loaded_from_a_key_file_can_decrypt() {
     let envelope = Envelope::encrypt_to_recipients(b"through files", &[recipient]).unwrap();
     let loaded = load_secret_key(&dir.path().join("id.pem")).unwrap();
     assert_eq!(envelope.decrypt(&loaded).unwrap(), b"through files");
+}
+
+#[test]
+fn a_key_listed_twice_still_works() {
+    let (secrets, publics) = recipients(2);
+    let listed = [publics[0], publics[1], publics[0], publics[1], publics[0]];
+    let envelope = Envelope::encrypt_to_recipients(b"once each", &listed).unwrap();
+    assert_eq!(envelope.decrypt(&secrets[0]).unwrap(), b"once each");
+    assert_eq!(envelope.decrypt(&secrets[1]).unwrap(), b"once each");
+}
+
+#[test]
+fn exactly_the_maximum_number_of_recipients_is_allowed() {
+    let (secrets, publics) = recipients(MAX_RECIPIENTS);
+    let envelope = Envelope::encrypt_to_recipients(b"full", &publics).unwrap();
+    assert_eq!(envelope.decrypt(&secrets[0]).unwrap(), b"full");
+    assert_eq!(
+        envelope.decrypt(&secrets[MAX_RECIPIENTS - 1]).unwrap(),
+        b"full"
+    );
+}
+
+#[test]
+fn one_more_than_the_maximum_is_rejected() {
+    let (_, publics) = recipients(MAX_RECIPIENTS + 1);
+    assert!(matches!(
+        Envelope::encrypt_to_recipients(b"x", &publics),
+        Err(CryptoError::TooManyRecipients { count, max })
+            if count == MAX_RECIPIENTS + 1 && max == MAX_RECIPIENTS
+    ));
+}
+
+#[test]
+fn duplicates_do_not_count_toward_the_limit() {
+    let (secrets, publics) = recipients(MAX_RECIPIENTS);
+    let mut listed = publics.clone();
+    listed.extend_from_slice(&publics);
+    listed.push(publics[0]);
+    let envelope = Envelope::encrypt_to_recipients(b"deduplicated", &listed).unwrap();
+    assert_eq!(envelope.decrypt(&secrets[10]).unwrap(), b"deduplicated");
+
+    let one = vec![publics[0]; MAX_RECIPIENTS * 3];
+    let envelope = Envelope::encrypt_to_recipients(b"same key", &one).unwrap();
+    assert_eq!(envelope.decrypt(&secrets[0]).unwrap(), b"same key");
 }

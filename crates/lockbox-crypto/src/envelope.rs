@@ -38,6 +38,8 @@
 //! # }
 //! ```
 
+use std::collections::HashSet;
+
 use curve25519_dalek::MontgomeryPoint;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -51,6 +53,9 @@ use crate::{
 /// Format number. Stored in every envelope and used as AAD for the file, so
 /// changing it breaks decryption.
 pub const ENVELOPE_VERSION: u16 = 1;
+
+/// The most distinct recipients one envelope can have.
+pub const MAX_RECIPIENTS: usize = 64;
 
 /// `e * G`. Public.
 type EphemeralPublic = [u8; KEY_LEN];
@@ -68,7 +73,7 @@ pub struct Envelope {
     version: u16,
     /// Nonce for the file encryption.
     nonce: Nonce,
-    /// One entry per recipient, in the order given.
+    /// One entry per distinct recipient, in the order given.
     recipients: Vec<WrappedKey>,
     /// The encrypted file. The last 16 bytes are the tag.
     ciphertext: Vec<u8>,
@@ -77,17 +82,28 @@ pub struct Envelope {
 impl Envelope {
     /// Encrypts `message` so every key in `recipients` can decrypt it.
     ///
-    /// Fails with `NoRecipients` if the list is empty, and with
-    /// `WeakRecipientKey` if a key gives an all-zero shared secret.
+    /// A key listed more than once gets one entry. Fails with `NoRecipients`
+    /// if the list is empty, `TooManyRecipients` if it has more than
+    /// `MAX_RECIPIENTS` distinct keys, and `WeakRecipientKey` if a key gives
+    /// an all-zero shared secret.
     pub fn encrypt_to_recipients(message: &[u8], recipients: &[VerifyingKey]) -> Result<Self> {
         if recipients.is_empty() {
             return Err(CryptoError::NoRecipients);
         }
+        let mut seen = HashSet::new();
+        let unique: Vec<&VerifyingKey> =
+            recipients.iter().filter(|key| seen.insert(**key)).collect();
+        if unique.len() > MAX_RECIPIENTS {
+            return Err(CryptoError::TooManyRecipients {
+                count: unique.len(),
+                max: MAX_RECIPIENTS,
+            });
+        }
         let data_key = SymmetricKey::random();
         let aad = Self::aad(ENVELOPE_VERSION);
         let (nonce, ciphertext) = data_key.encrypt(message, &aad)?;
-        let recipients = recipients
-            .iter()
+        let recipients = unique
+            .into_iter()
             .map(|recipient| WrappedKey::seal(&data_key, recipient))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
