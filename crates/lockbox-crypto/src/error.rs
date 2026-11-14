@@ -31,6 +31,15 @@ pub enum CryptoError {
 
     #[error("decryption failed: wrong key or tampered data")]
     Decryption,
+
+    #[error("weak recipient key")]
+    WeakRecipientKey,
+
+    #[error("at least one recipient is required")]
+    NoRecipients,
+
+    #[error("this key is not a recipient of the envelope")]
+    NotARecipient,
 }
 
 pub type Result<T> = std::result::Result<T, CryptoError>;

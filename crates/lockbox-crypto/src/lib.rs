@@ -1,4 +1,5 @@
 mod domain;
+pub mod envelope;
 pub mod error;
 pub mod keys;
 pub mod sign;

@@ -1,4 +1,5 @@
 pub(crate) const SIGN: &[u8] = b"lockbox/v1/sign";
+pub(crate) const KEY_WRAP: &[u8] = b"lockbox/v1/key-wrap";
 
 pub(crate) fn prepend_domain(domain: &[u8], message: &[u8]) -> Vec<u8> {
     let mut byte_vec = Vec::with_capacity(domain.len() + message.len());
