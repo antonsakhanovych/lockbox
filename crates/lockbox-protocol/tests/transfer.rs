@@ -1,51 +1,56 @@
-use std::io::{self, Cursor, Write};
+use std::io::{self, Cursor};
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+mod common;
 
 use lockbox_protocol::chunk::CHUNK_LEN;
 use lockbox_protocol::codec::{read_message, write_message};
 use lockbox_protocol::transfer::{receive_fetch, receive_upload, send_fetch, send_upload};
 use lockbox_protocol::{Chunk, ErrorCode, ProtocolError, Request, Response};
+use tokio::io::AsyncWrite;
 
 fn data(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i % 251) as u8).collect()
 }
 
-fn upload_wire(ciphertext: &[u8]) -> Vec<u8> {
+async fn upload_wire(ciphertext: &[u8]) -> Vec<u8> {
     let mut wire = Vec::new();
-    send_upload(&mut wire, ciphertext).unwrap();
+    send_upload(&mut wire, ciphertext).await.unwrap();
     wire
 }
 
-fn fetch_wire(ciphertext: &[u8]) -> Vec<u8> {
+async fn fetch_wire(ciphertext: &[u8]) -> Vec<u8> {
     let mut wire = Vec::new();
-    send_fetch(&mut wire, ciphertext).unwrap();
+    send_fetch(&mut wire, ciphertext).await.unwrap();
     wire
 }
 
-fn uploaded(wire: &[u8], expected_len: u64) -> Result<Vec<u8>, ProtocolError> {
+async fn uploaded(wire: &[u8], expected_len: u64) -> Result<Vec<u8>, ProtocolError> {
     let mut sink = Vec::new();
-    receive_upload(&mut Cursor::new(wire), &mut sink, expected_len)?;
+    receive_upload(&mut Cursor::new(wire), &mut sink, expected_len).await?;
     Ok(sink)
 }
 
-fn fetched(wire: &[u8], expected_len: u64) -> Result<Vec<u8>, ProtocolError> {
+async fn fetched(wire: &[u8], expected_len: u64) -> Result<Vec<u8>, ProtocolError> {
     let mut sink = Vec::new();
-    receive_fetch(&mut Cursor::new(wire), &mut sink, expected_len)?;
+    receive_fetch(&mut Cursor::new(wire), &mut sink, expected_len).await?;
     Ok(sink)
 }
 
-fn upload_chunk_sizes(wire: &[u8]) -> Vec<usize> {
+async fn upload_chunk_sizes(wire: &[u8]) -> Vec<usize> {
     let mut reader = Cursor::new(wire);
     let mut sizes = Vec::new();
-    while let Ok(Request::UploadChunk(chunk)) = read_message(&mut reader) {
+    while let Ok(Request::UploadChunk(chunk)) = read_message(&mut reader).await {
         sizes.push(chunk.as_bytes().len());
     }
     sizes
 }
 
-fn fetch_chunk_sizes(wire: &[u8]) -> Vec<usize> {
+async fn fetch_chunk_sizes(wire: &[u8]) -> Vec<usize> {
     let mut reader = Cursor::new(wire);
     let mut sizes = Vec::new();
-    while let Ok(Response::Chunk(chunk)) = read_message(&mut reader) {
+    while let Ok(Response::Chunk(chunk)) = read_message(&mut reader).await {
         sizes.push(chunk.as_bytes().len());
     }
     sizes
@@ -56,25 +61,35 @@ struct CountingSink {
     bytes: Vec<u8>,
 }
 
-impl Write for CountingSink {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+impl AsyncWrite for CountingSink {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         self.writes.push(buf.len());
         self.bytes.extend_from_slice(buf);
-        Ok(buf.len())
+        Poll::Ready(Ok(buf.len()))
     }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
     }
 }
 
 struct Broken(io::ErrorKind);
 
-impl Write for Broken {
-    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-        Err(self.0.into())
+impl AsyncWrite for Broken {
+    fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, _: &[u8]) -> Poll<io::Result<usize>> {
+        Poll::Ready(Err(self.0.into()))
     }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -89,227 +104,262 @@ const SIZES: [usize; 8] = [
     3 * CHUNK_LEN + 5,
 ];
 
-#[test]
-fn an_upload_of_every_interesting_size_round_trips() {
+#[tokio::test]
+async fn an_upload_of_every_interesting_size_round_trips() {
     for len in SIZES {
         let ciphertext = data(len);
         assert_eq!(
-            uploaded(&upload_wire(&ciphertext), len as u64).unwrap(),
+            uploaded(&upload_wire(&ciphertext).await, len as u64)
+                .await
+                .unwrap(),
             ciphertext,
             "{len}"
         );
     }
 }
 
-#[test]
-fn a_fetch_of_every_interesting_size_round_trips() {
+#[tokio::test]
+async fn a_fetch_of_every_interesting_size_round_trips() {
     for len in SIZES {
         let ciphertext = data(len);
         assert_eq!(
-            fetched(&fetch_wire(&ciphertext), len as u64).unwrap(),
+            fetched(&fetch_wire(&ciphertext).await, len as u64)
+                .await
+                .unwrap(),
             ciphertext,
             "{len}"
         );
     }
 }
 
-#[test]
-fn each_chunk_is_a_message_with_its_kind_byte() {
-    let upload = upload_wire(&data(10));
-    let fetch = fetch_wire(&data(10));
-    assert_eq!(upload[0], 4);
-    assert_eq!(fetch[0], 4);
+#[tokio::test]
+async fn each_chunk_is_a_message_with_its_kind_byte() {
+    let upload = upload_wire(&data(10)).await;
+    let fetch = fetch_wire(&data(10)).await;
+    assert_eq!(common::body(upload.clone())[0], 4);
+    assert_eq!(common::body(fetch.clone())[0], 4);
     assert_eq!(
-        read_message::<Request>(&mut Cursor::new(&upload)).unwrap(),
+        read_message::<Request, _>(&mut Cursor::new(&upload))
+            .await
+            .unwrap(),
         Request::UploadChunk(Chunk::new(data(10)).unwrap())
     );
     assert_eq!(
-        read_message::<Response>(&mut Cursor::new(&fetch)).unwrap(),
+        read_message::<Response, _>(&mut Cursor::new(&fetch))
+            .await
+            .unwrap(),
         Response::Chunk(Chunk::new(data(10)).unwrap())
     );
 }
 
-#[test]
-fn the_ciphertext_is_cut_into_full_chunks_and_one_remainder() {
+#[tokio::test]
+async fn the_ciphertext_is_cut_into_full_chunks_and_one_remainder() {
     assert_eq!(
-        upload_chunk_sizes(&upload_wire(&data(2 * CHUNK_LEN + 100))),
+        upload_chunk_sizes(&upload_wire(&data(2 * CHUNK_LEN + 100)).await).await,
         [CHUNK_LEN, CHUNK_LEN, 100]
     );
     assert_eq!(
-        fetch_chunk_sizes(&fetch_wire(&data(2 * CHUNK_LEN + 100))),
+        fetch_chunk_sizes(&fetch_wire(&data(2 * CHUNK_LEN + 100)).await).await,
         [CHUNK_LEN, CHUNK_LEN, 100]
     );
 }
 
-#[test]
-fn an_exact_multiple_of_the_chunk_size_has_no_extra_chunk() {
+#[tokio::test]
+async fn an_exact_multiple_of_the_chunk_size_has_no_extra_chunk() {
     assert_eq!(
-        upload_chunk_sizes(&upload_wire(&data(2 * CHUNK_LEN))),
+        upload_chunk_sizes(&upload_wire(&data(2 * CHUNK_LEN)).await).await,
         [CHUNK_LEN, CHUNK_LEN]
     );
 }
 
-#[test]
-fn sending_nothing_writes_nothing() {
-    assert!(upload_wire(&[]).is_empty());
-    assert!(fetch_wire(&[]).is_empty());
+#[tokio::test]
+async fn sending_nothing_writes_nothing() {
+    assert!(upload_wire(&[]).await.is_empty());
+    assert!(fetch_wire(&[]).await.is_empty());
 }
 
-#[test]
-fn the_sink_receives_the_data_one_chunk_at_a_time() {
+#[tokio::test]
+async fn the_sink_receives_the_data_one_chunk_at_a_time() {
     let ciphertext = data(CHUNK_LEN + 10);
     let mut sink = CountingSink {
         writes: Vec::new(),
         bytes: Vec::new(),
     };
     receive_fetch(
-        &mut Cursor::new(fetch_wire(&ciphertext)),
+        &mut Cursor::new(fetch_wire(&ciphertext).await),
         &mut sink,
         ciphertext.len() as u64,
     )
+    .await
     .unwrap();
     assert_eq!(sink.writes, [CHUNK_LEN, 10]);
     assert_eq!(sink.bytes, ciphertext);
 }
 
-#[test]
-fn receiving_an_upload_stops_exactly_at_the_announced_length() {
-    let mut wire = upload_wire(&data(CHUNK_LEN + 3));
-    write_message(&mut wire, &Request::BeginUpload).unwrap();
+#[tokio::test]
+async fn receiving_an_upload_stops_exactly_at_the_announced_length() {
+    let mut wire = upload_wire(&data(CHUNK_LEN + 3)).await;
+    write_message(&mut wire, &Request::BeginUpload)
+        .await
+        .unwrap();
     let mut reader = Cursor::new(wire);
     let mut sink = Vec::new();
-    receive_upload(&mut reader, &mut sink, (CHUNK_LEN + 3) as u64).unwrap();
+    receive_upload(&mut reader, &mut sink, (CHUNK_LEN + 3) as u64)
+        .await
+        .unwrap();
     assert_eq!(
-        read_message::<Request>(&mut reader).unwrap(),
+        read_message::<Request, _>(&mut reader).await.unwrap(),
         Request::BeginUpload
     );
 }
 
-#[test]
-fn receiving_zero_bytes_reads_nothing() {
+#[tokio::test]
+async fn receiving_zero_bytes_reads_nothing() {
     let mut sink = Vec::new();
-    receive_upload(&mut Cursor::new(Vec::new()), &mut sink, 0).unwrap();
-    receive_fetch(&mut Cursor::new(Vec::new()), &mut sink, 0).unwrap();
+    receive_upload(&mut Cursor::new(Vec::new()), &mut sink, 0)
+        .await
+        .unwrap();
+    receive_fetch(&mut Cursor::new(Vec::new()), &mut sink, 0)
+        .await
+        .unwrap();
     assert!(sink.is_empty());
 }
 
-#[test]
-fn more_data_than_announced_is_rejected() {
+#[tokio::test]
+async fn more_data_than_announced_is_rejected() {
     assert!(matches!(
-        uploaded(&upload_wire(&data(1000)), 999),
+        uploaded(&upload_wire(&data(1000)).await, 999).await,
         Err(ProtocolError::TransferOverflow)
     ));
     assert!(matches!(
-        fetched(&fetch_wire(&data(2 * CHUNK_LEN)), (CHUNK_LEN + 1) as u64),
+        fetched(
+            &fetch_wire(&data(2 * CHUNK_LEN)).await,
+            (CHUNK_LEN + 1) as u64
+        )
+        .await,
         Err(ProtocolError::TransferOverflow)
     ));
 }
 
-#[test]
-fn less_data_than_announced_means_the_connection_closed() {
+#[tokio::test]
+async fn less_data_than_announced_means_the_connection_closed() {
     assert!(matches!(
-        uploaded(&upload_wire(&data(CHUNK_LEN)), (CHUNK_LEN + 1) as u64),
+        uploaded(&upload_wire(&data(CHUNK_LEN)).await, (CHUNK_LEN + 1) as u64).await,
         Err(ProtocolError::ConnectionClosed)
     ));
     assert!(matches!(
-        fetched(&[], 5),
+        fetched(&[], 5).await,
         Err(ProtocolError::ConnectionClosed)
     ));
 }
 
-#[test]
-fn a_stream_cut_inside_a_chunk_means_the_connection_closed() {
-    let wire = upload_wire(&data(1000));
+#[tokio::test]
+async fn a_stream_cut_inside_a_chunk_means_the_connection_closed() {
+    let wire = upload_wire(&data(1000)).await;
     for length in [1, 2, 10, wire.len() - 1] {
         assert!(matches!(
-            uploaded(&wire[..length], 1000),
+            uploaded(&wire[..length], 1000).await,
             Err(ProtocolError::ConnectionClosed)
         ));
     }
 }
 
-#[test]
-fn another_kind_of_request_in_an_upload_is_rejected() {
+#[tokio::test]
+async fn another_kind_of_request_in_an_upload_is_rejected() {
     let mut wire = Vec::new();
-    write_message(&mut wire, &Request::BeginUpload).unwrap();
+    write_message(&mut wire, &Request::BeginUpload)
+        .await
+        .unwrap();
     assert!(matches!(
-        uploaded(&wire, 10),
+        uploaded(&wire, 10).await,
         Err(ProtocolError::UnexpectedMessage)
     ));
 
-    let mut wire = upload_wire(&data(CHUNK_LEN));
-    write_message(&mut wire, &Request::BeginUpload).unwrap();
+    let mut wire = upload_wire(&data(CHUNK_LEN)).await;
+    write_message(&mut wire, &Request::BeginUpload)
+        .await
+        .unwrap();
     assert!(matches!(
-        uploaded(&wire, (CHUNK_LEN + 10) as u64),
+        uploaded(&wire, (CHUNK_LEN + 10) as u64).await,
         Err(ProtocolError::UnexpectedMessage)
     ));
 }
 
-#[test]
-fn another_kind_of_response_in_a_fetch_is_rejected() {
+#[tokio::test]
+async fn another_kind_of_response_in_a_fetch_is_rejected() {
     let mut wire = Vec::new();
-    write_message(&mut wire, &Response::Deleted).unwrap();
+    write_message(&mut wire, &Response::Deleted).await.unwrap();
     assert!(matches!(
-        fetched(&wire, 10),
+        fetched(&wire, 10).await,
         Err(ProtocolError::UnexpectedMessage)
     ));
 }
 
-#[test]
-fn an_error_from_the_server_in_the_middle_of_a_fetch_is_reported() {
-    let mut wire = fetch_wire(&data(CHUNK_LEN));
-    write_message(&mut wire, &Response::Error(ErrorCode::Internal)).unwrap();
+#[tokio::test]
+async fn an_error_from_the_server_in_the_middle_of_a_fetch_is_reported() {
+    let mut wire = fetch_wire(&data(CHUNK_LEN)).await;
+    write_message(&mut wire, &Response::Error(ErrorCode::Internal))
+        .await
+        .unwrap();
     assert!(matches!(
-        fetched(&wire, (2 * CHUNK_LEN) as u64),
+        fetched(&wire, (2 * CHUNK_LEN) as u64).await,
         Err(ProtocolError::Remote(ErrorCode::Internal))
     ));
 }
 
-#[test]
-fn an_empty_chunk_is_rejected() {
+#[tokio::test]
+async fn an_empty_chunk_is_rejected() {
     let mut wire = Vec::new();
     write_message(
         &mut wire,
         &Request::UploadChunk(Chunk::new(vec![]).unwrap()),
     )
+    .await
     .unwrap();
     assert!(matches!(
-        uploaded(&wire, 10),
+        uploaded(&wire, 10).await,
         Err(ProtocolError::EmptyChunk)
     ));
     let mut wire = Vec::new();
-    write_message(&mut wire, &Response::Chunk(Chunk::new(vec![]).unwrap())).unwrap();
-    assert!(matches!(fetched(&wire, 10), Err(ProtocolError::EmptyChunk)));
+    write_message(&mut wire, &Response::Chunk(Chunk::new(vec![]).unwrap()))
+        .await
+        .unwrap();
+    assert!(matches!(
+        fetched(&wire, 10).await,
+        Err(ProtocolError::EmptyChunk)
+    ));
 }
 
-#[test]
-fn an_oversize_chunk_is_rejected() {
-    let mut wire = vec![4];
-    wire.extend(postcard::to_stdvec(&vec![0u8; CHUNK_LEN + 1]).unwrap());
+#[tokio::test]
+async fn an_oversize_chunk_is_rejected() {
+    let mut body = vec![4];
+    body.extend(postcard::to_stdvec(&vec![0u8; CHUNK_LEN + 1]).unwrap());
+    let wire = common::frame(&body);
     assert!(matches!(
-        uploaded(&wire, (CHUNK_LEN + 1) as u64),
+        uploaded(&wire, (CHUNK_LEN + 1) as u64).await,
         Err(ProtocolError::Decode(_))
     ));
 }
 
-#[test]
-fn a_failing_sink_reports_an_io_error() {
+#[tokio::test]
+async fn a_failing_sink_reports_an_io_error() {
     let result = receive_fetch(
-        &mut Cursor::new(fetch_wire(&data(100))),
+        &mut Cursor::new(fetch_wire(&data(100)).await),
         &mut Broken(io::ErrorKind::StorageFull),
         100,
-    );
+    )
+    .await;
     assert!(matches!(result, Err(ProtocolError::Io(_))));
 }
 
-#[test]
-fn a_failing_writer_reports_an_io_error_when_sending() {
+#[tokio::test]
+async fn a_failing_writer_reports_an_io_error_when_sending() {
     assert!(matches!(
-        send_upload(&mut Broken(io::ErrorKind::BrokenPipe), &data(10)),
+        send_upload(&mut Broken(io::ErrorKind::BrokenPipe), &data(10)).await,
         Err(ProtocolError::Io(_))
     ));
     assert!(matches!(
-        send_fetch(&mut Broken(io::ErrorKind::BrokenPipe), &data(10)),
+        send_fetch(&mut Broken(io::ErrorKind::BrokenPipe), &data(10)).await,
         Err(ProtocolError::Io(_))
     ));
 }

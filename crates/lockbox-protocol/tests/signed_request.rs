@@ -134,14 +134,14 @@ fn an_expired_answer_is_reported_as_expired_even_if_the_signature_is_good() {
     ));
 }
 
-#[test]
-fn an_answer_still_checks_after_travelling_over_the_wire() {
+#[tokio::test]
+async fn an_answer_still_checks_after_travelling_over_the_wire() {
     let key = generate_keypair();
     let challenge = challenge(Purpose::Upload);
     let answer = SignedRequest::answer(&challenge, &key);
     let mut bytes = Vec::new();
-    write_message(&mut bytes, &answer).unwrap();
-    let received: SignedRequest = read_message(&mut Cursor::new(bytes)).unwrap();
+    write_message(&mut bytes, &answer).await.unwrap();
+    let received: SignedRequest = read_message(&mut Cursor::new(bytes)).await.unwrap();
     assert_eq!(received, answer);
     assert!(
         received

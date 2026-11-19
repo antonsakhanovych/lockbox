@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::io::Cursor;
 
+mod common;
+
 use lockbox_protocol::challenge::{CHALLENGE_NONCE_LEN, CHALLENGE_TTL_SECS, SIGNING_BYTES_LEN};
 use lockbox_protocol::codec::{read_message, write_message};
 use lockbox_protocol::crypto::keys::generate_keypair;
@@ -12,14 +14,14 @@ const PURPOSE_AT: usize = 16;
 const NONCE_AT: usize = 17;
 const ISSUED_AT_AT: usize = 49;
 
-fn encode(challenge: &Challenge) -> Vec<u8> {
+async fn encode(challenge: &Challenge) -> Vec<u8> {
     let mut bytes = Vec::new();
-    write_message(&mut bytes, challenge).unwrap();
-    bytes
+    write_message(&mut bytes, challenge).await.unwrap();
+    common::body(bytes)
 }
 
-fn decode(bytes: &[u8]) -> Result<Challenge, ProtocolError> {
-    read_message(&mut Cursor::new(bytes))
+async fn decode(bytes: &[u8]) -> Result<Challenge, ProtocolError> {
+    read_message(&mut Cursor::new(common::frame(bytes))).await
 }
 
 #[test]
@@ -80,46 +82,49 @@ fn the_signing_bytes_have_a_fixed_layout() {
     assert_eq!(Challenge::new(id, Purpose::Upload, 0).signing_bytes()[0], 3);
 }
 
-#[test]
-fn on_the_wire_a_challenge_has_a_known_layout() {
+#[tokio::test]
+async fn on_the_wire_a_challenge_has_a_known_layout() {
     let id = FileId::random();
     let challenge = Challenge::new(id, Purpose::Delete, 5);
-    let bytes = encode(&challenge);
+    let bytes = encode(&challenge).await;
     assert_eq!(bytes.len(), WIRE_LEN);
     assert_eq!(&bytes[..PURPOSE_AT], id.as_bytes());
     assert_eq!(bytes[PURPOSE_AT], 1);
     assert_eq!(&bytes[NONCE_AT..ISSUED_AT_AT], challenge.nonce());
     assert_eq!(bytes[ISSUED_AT_AT], 5);
-    assert_eq!(decode(&bytes).unwrap(), challenge);
+    assert_eq!(decode(&bytes).await.unwrap(), challenge);
 }
 
-#[test]
-fn an_unknown_purpose_is_rejected() {
-    let mut bytes = encode(&Challenge::new(FileId::random(), Purpose::Fetch, 5));
+#[tokio::test]
+async fn an_unknown_purpose_is_rejected() {
+    let mut bytes = encode(&Challenge::new(FileId::random(), Purpose::Fetch, 5)).await;
     bytes[PURPOSE_AT] = 3;
-    assert!(matches!(decode(&bytes), Err(ProtocolError::Decode(_))));
+    assert!(matches!(
+        decode(&bytes).await,
+        Err(ProtocolError::Decode(_))
+    ));
 }
 
-#[test]
-fn every_purpose_round_trips() {
+#[tokio::test]
+async fn every_purpose_round_trips() {
     for purpose in [Purpose::Fetch, Purpose::Delete, Purpose::Upload] {
         let challenge = Challenge::new(FileId::random(), purpose, 5);
-        assert_eq!(decode(&encode(&challenge)).unwrap(), challenge);
+        assert_eq!(decode(&encode(&challenge).await).await.unwrap(), challenge);
     }
 }
 
-#[test]
-fn a_signature_for_one_purpose_does_not_verify_as_another() {
+#[tokio::test]
+async fn a_signature_for_one_purpose_does_not_verify_as_another() {
     let key = generate_keypair();
     let purposes = [Purpose::Fetch, Purpose::Delete, Purpose::Upload];
     for (signed_index, signed_purpose) in purposes.into_iter().enumerate() {
         let challenge = Challenge::new(FileId::random(), signed_purpose, 5);
         let signature = sign(&challenge.signing_bytes(), &key);
-        let wire = encode(&challenge);
+        let wire = encode(&challenge).await;
         for (other_index, _) in purposes.into_iter().enumerate() {
             let mut bytes = wire.clone();
             bytes[PURPOSE_AT] = other_index as u8;
-            let other = decode(&bytes).unwrap();
+            let other = decode(&bytes).await.unwrap();
             let verified = verify(&other.signing_bytes(), &signature, &key.verifying_key()).is_ok();
             assert_eq!(verified, other_index == signed_index);
         }
@@ -134,12 +139,12 @@ fn a_signature_over_a_challenge_verifies() {
     assert!(verify(&challenge.signing_bytes(), &signature, &key.verifying_key()).is_ok());
 }
 
-#[test]
-fn changing_any_field_breaks_the_signature() {
+#[tokio::test]
+async fn changing_any_field_breaks_the_signature() {
     let key = generate_keypair();
     let challenge = Challenge::new(FileId::random(), Purpose::Fetch, 77);
     let signature = sign(&challenge.signing_bytes(), &key);
-    let wire = encode(&challenge);
+    let wire = encode(&challenge).await;
 
     let mut tampered = Vec::new();
     for range in [
@@ -158,7 +163,7 @@ fn changing_any_field_breaks_the_signature() {
     tampered.push(delete_instead);
 
     for bytes in tampered {
-        let other = decode(&bytes).unwrap();
+        let other = decode(&bytes).await.unwrap();
         assert_ne!(other, challenge);
         assert_ne!(other.signing_bytes(), challenge.signing_bytes());
         assert!(verify(&other.signing_bytes(), &signature, &key.verifying_key()).is_err());

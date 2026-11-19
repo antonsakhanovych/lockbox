@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::io::Cursor;
 
-use lockbox_protocol::codec::{read_message, write_message};
+use lockbox_protocol::codec::{LENGTH_PREFIX_LEN, read_message, write_message};
 use lockbox_protocol::file_id::FILE_ID_LEN;
 use lockbox_protocol::{FileId, ProtocolError};
 
@@ -98,11 +98,17 @@ fn a_second_spelling_of_the_same_bytes_is_rejected() {
     ));
 }
 
-#[test]
-fn on_the_wire_an_id_is_exactly_its_16_bytes() {
+#[tokio::test]
+async fn on_the_wire_an_id_is_exactly_its_16_bytes() {
     let id = FileId::random();
     let mut bytes = Vec::new();
-    write_message(&mut bytes, &id).unwrap();
-    assert_eq!(bytes, id.as_bytes());
-    assert_eq!(read_message::<FileId>(&mut Cursor::new(bytes)).unwrap(), id);
+    write_message(&mut bytes, &id).await.unwrap();
+    assert_eq!(bytes[LENGTH_PREFIX_LEN..], *id.as_bytes());
+    assert_eq!(bytes[..LENGTH_PREFIX_LEN], 16u32.to_be_bytes());
+    assert_eq!(
+        read_message::<FileId, _>(&mut Cursor::new(bytes))
+            .await
+            .unwrap(),
+        id
+    );
 }
