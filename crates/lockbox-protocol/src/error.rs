@@ -15,6 +15,9 @@ pub enum ProtocolError {
     #[error("incoming message exceeds the limit of {max} bytes")]
     MessageLimitExceeded { max: usize },
 
+    #[error("message has bytes after its end")]
+    TrailingBytes,
+
     #[error("connection closed")]
     ConnectionClosed,
 

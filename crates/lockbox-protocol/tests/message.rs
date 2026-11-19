@@ -1,5 +1,7 @@
 use std::io::Cursor;
 
+mod common;
+
 use lockbox_protocol::challenge::CHALLENGE_NONCE_LEN;
 use lockbox_protocol::chunk::CHUNK_LEN;
 use lockbox_protocol::codec::{MAX_MESSAGE_LEN, read_message, write_message};
@@ -13,14 +15,14 @@ use lockbox_protocol::{
     Response, SignedRequest,
 };
 
-fn encode<T: serde::Serialize>(message: &T) -> Vec<u8> {
+async fn encode<T: serde::Serialize>(message: &T) -> Vec<u8> {
     let mut bytes = Vec::new();
-    write_message(&mut bytes, message).unwrap();
-    bytes
+    write_message(&mut bytes, message).await.unwrap();
+    common::body(bytes)
 }
 
-fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, ProtocolError> {
-    read_message(&mut Cursor::new(bytes))
+async fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, ProtocolError> {
+    read_message(&mut Cursor::new(common::frame(bytes))).await
 }
 
 fn envelope_header(recipients: usize) -> EnvelopeHeader {
@@ -107,22 +109,28 @@ fn all_responses() -> Vec<Response> {
     ]
 }
 
-#[test]
-fn every_request_round_trips() {
+#[tokio::test]
+async fn every_request_round_trips() {
     for request in all_requests() {
-        assert_eq!(decode::<Request>(&encode(&request)).unwrap(), request);
+        assert_eq!(
+            decode::<Request>(&encode(&request).await).await.unwrap(),
+            request
+        );
     }
 }
 
-#[test]
-fn every_response_round_trips() {
+#[tokio::test]
+async fn every_response_round_trips() {
     for response in all_responses() {
-        assert_eq!(decode::<Response>(&encode(&response)).unwrap(), response);
+        assert_eq!(
+            decode::<Response>(&encode(&response).await).await.unwrap(),
+            response
+        );
     }
 }
 
-#[test]
-fn every_error_code_round_trips_and_has_text() {
+#[tokio::test]
+async fn every_error_code_round_trips_and_has_text() {
     for code in [
         ErrorCode::InvalidRequest,
         ErrorCode::UnexpectedMessage,
@@ -130,89 +138,95 @@ fn every_error_code_round_trips_and_has_text() {
         ErrorCode::TooLarge,
         ErrorCode::Internal,
     ] {
-        assert_eq!(decode::<ErrorCode>(&encode(&code)).unwrap(), code);
+        assert_eq!(
+            decode::<ErrorCode>(&encode(&code).await).await.unwrap(),
+            code
+        );
         assert!(!code.to_string().is_empty());
     }
 }
 
-#[test]
-fn the_request_kind_is_the_first_byte_in_a_fixed_order() {
-    let kinds: Vec<u8> = all_requests()
-        .iter()
-        .map(|request| encode(request)[0])
-        .collect();
+#[tokio::test]
+async fn the_request_kind_is_the_first_byte_in_a_fixed_order() {
+    let mut kinds = Vec::new();
+    for request in all_requests() {
+        kinds.push(encode(&request).await[0]);
+    }
     assert_eq!(kinds, [0, 1, 2, 3, 4, 5, 6]);
 }
 
-#[test]
-fn the_response_kind_is_the_first_byte_in_a_fixed_order() {
-    let kinds: Vec<u8> = all_responses()
-        .iter()
-        .map(|response| encode(response)[0])
-        .collect();
+#[tokio::test]
+async fn the_response_kind_is_the_first_byte_in_a_fixed_order() {
+    let mut kinds = Vec::new();
+    for response in all_responses() {
+        kinds.push(encode(&response).await[0]);
+    }
     assert_eq!(kinds, [0, 1, 2, 3, 4, 5, 6]);
 }
 
-#[test]
-fn a_begin_request_is_its_kind_and_the_file_id() {
+#[tokio::test]
+async fn a_begin_request_is_its_kind_and_the_file_id() {
     let id = FileId::random();
     let mut expected = vec![1];
     expected.extend_from_slice(id.as_bytes());
-    assert_eq!(encode(&Request::BeginFetch { file_id: id }), expected);
+    assert_eq!(encode(&Request::BeginFetch { file_id: id }).await, expected);
     expected[0] = 2;
-    assert_eq!(encode(&Request::BeginDelete { file_id: id }), expected);
+    assert_eq!(
+        encode(&Request::BeginDelete { file_id: id }).await,
+        expected
+    );
 }
 
-#[test]
-fn an_unknown_kind_is_rejected() {
+#[tokio::test]
+async fn an_unknown_kind_is_rejected() {
     assert!(matches!(
-        decode::<Request>(&[7]),
+        decode::<Request>(&[7]).await,
         Err(ProtocolError::Decode(_))
     ));
     assert!(matches!(
-        decode::<Response>(&[7]),
+        decode::<Response>(&[7]).await,
         Err(ProtocolError::Decode(_))
     ));
 }
 
-#[test]
-fn an_oversize_chunk_inside_a_request_is_rejected() {
+#[tokio::test]
+async fn an_oversize_chunk_inside_a_request_is_rejected() {
     let mut bytes = vec![4];
     bytes.extend(postcard::to_stdvec(&vec![0u8; CHUNK_LEN + 1]).unwrap());
     assert!(matches!(
-        decode::<Request>(&bytes),
+        decode::<Request>(&bytes).await,
         Err(ProtocolError::Decode(_))
     ));
 }
 
-#[test]
-fn the_largest_upload_request_fits_in_a_message() {
+#[tokio::test]
+async fn the_largest_upload_request_fits_in_a_message() {
     let key = generate_keypair();
     let request = Request::Upload {
         proof: signed_request(&key),
         header: file_header(MAX_RECIPIENTS),
     };
-    let bytes = encode(&request);
+    let bytes = encode(&request).await;
     assert!(bytes.len() < MAX_MESSAGE_LEN / 10, "{} bytes", bytes.len());
-    assert_eq!(decode::<Request>(&bytes).unwrap(), request);
+    assert_eq!(decode::<Request>(&bytes).await.unwrap(), request);
 }
 
-#[test]
-fn a_fetch_response_is_small_however_many_recipients_the_file_has() {
+#[tokio::test]
+async fn a_fetch_response_is_small_however_many_recipients_the_file_has() {
     let (header, keys) = stored_header(MAX_RECIPIENTS);
     let fetch = header.fetch_header_for(&keys[MAX_RECIPIENTS - 1]).unwrap();
     let response = Response::FetchReady(Box::new(fetch));
-    let bytes = encode(&response);
+    let bytes = encode(&response).await;
     assert!(bytes.len() < 400, "{} bytes", bytes.len());
-    assert_eq!(decode::<Response>(&bytes).unwrap(), response);
+    assert_eq!(decode::<Response>(&bytes).await.unwrap(), response);
 }
 
-#[test]
-fn a_full_chunk_response_fits_in_a_message() {
+#[tokio::test]
+async fn a_full_chunk_response_fits_in_a_message() {
     let response = Response::Chunk(Chunk::new(vec![5; CHUNK_LEN]).unwrap());
-    let bytes = encode(&response);
+    let bytes = encode(&response).await;
     assert!(bytes.len() < MAX_MESSAGE_LEN / 2);
-    assert_eq!(decode::<Response>(&bytes).unwrap(), response);
+    assert_eq!(decode::<Response>(&bytes).await.unwrap(), response);
 }
 
 #[test]
@@ -261,9 +275,9 @@ const COUNT_AT: usize = NONCE_AT + 24;
 const ENTRIES_AT: usize = COUNT_AT + 1;
 const SEALED_LEN_AT: usize = ENTRIES_AT + 33 + 32 + 24;
 
-fn header_with_bytes(bytes: &[u8]) -> FileHeader {
+async fn header_with_bytes(bytes: &[u8]) -> FileHeader {
     FileHeader {
-        envelope: decode(bytes).unwrap(),
+        envelope: decode(bytes).await.unwrap(),
         ciphertext_len: 4096,
         expires_at: 0,
     }
@@ -277,29 +291,29 @@ fn one_recipient_bytes() -> Vec<u8> {
     bytes
 }
 
-#[test]
-fn an_unknown_envelope_version_is_rejected() {
+#[tokio::test]
+async fn an_unknown_envelope_version_is_rejected() {
     let mut bytes = one_recipient_bytes();
     bytes[0] = 9;
     assert!(matches!(
-        header_with_bytes(&bytes).validate(),
+        header_with_bytes(&bytes).await.validate(),
         Err(ProtocolError::Crypto(CryptoError::UnsupportedVersion(9)))
     ));
 }
 
-#[test]
-fn zero_recipients_are_rejected() {
+#[tokio::test]
+async fn zero_recipients_are_rejected() {
     let mut bytes = one_recipient_bytes();
     bytes.truncate(ENTRIES_AT);
     bytes[COUNT_AT] = 0;
     assert!(matches!(
-        header_with_bytes(&bytes).validate(),
+        header_with_bytes(&bytes).await.validate(),
         Err(ProtocolError::Crypto(CryptoError::MalformedEnvelope))
     ));
 }
 
-#[test]
-fn too_many_recipients_are_rejected() {
+#[tokio::test]
+async fn too_many_recipients_are_rejected() {
     let one = one_recipient_bytes();
     let entry = one[ENTRIES_AT..].to_vec();
     for count in [MAX_RECIPIENTS + 1, 100] {
@@ -310,7 +324,7 @@ fn too_many_recipients_are_rejected() {
         }
         assert!(
             matches!(
-                header_with_bytes(&bytes).validate(),
+                header_with_bytes(&bytes).await.validate(),
                 Err(ProtocolError::Crypto(CryptoError::MalformedEnvelope))
             ),
             "{count} recipients"
@@ -318,8 +332,8 @@ fn too_many_recipients_are_rejected() {
     }
 }
 
-#[test]
-fn a_sealed_key_of_the_wrong_length_is_rejected() {
+#[tokio::test]
+async fn a_sealed_key_of_the_wrong_length_is_rejected() {
     let shorter = {
         let mut bytes = one_recipient_bytes();
         bytes[SEALED_LEN_AT] = 47;
@@ -334,7 +348,7 @@ fn a_sealed_key_of_the_wrong_length_is_rejected() {
     };
     for bytes in [shorter, longer] {
         assert!(matches!(
-            header_with_bytes(&bytes).validate(),
+            header_with_bytes(&bytes).await.validate(),
             Err(ProtocolError::Crypto(CryptoError::MalformedEnvelope))
         ));
     }
@@ -362,10 +376,10 @@ fn a_key_that_is_not_a_recipient_gets_no_fetch_header() {
     );
 }
 
-#[test]
-fn a_fetch_header_does_not_contain_the_other_recipients_keys() {
+#[tokio::test]
+async fn a_fetch_header_does_not_contain_the_other_recipients_keys() {
     let (header, keys) = stored_header(6);
-    let bytes = encode(&header.fetch_header_for(&keys[2]).unwrap());
+    let bytes = encode(&header.fetch_header_for(&keys[2]).unwrap()).await;
     for (index, key) in keys.iter().enumerate() {
         let present = bytes
             .windows(32)
@@ -389,11 +403,11 @@ fn the_ciphertext_length_of_a_fetch_header_must_be_within_bounds() {
     }
 }
 
-#[test]
-fn a_fetch_header_with_an_unknown_version_is_rejected() {
-    let mut bytes = encode(&fetch_header());
+#[tokio::test]
+async fn a_fetch_header_with_an_unknown_version_is_rejected() {
+    let mut bytes = encode(&fetch_header()).await;
     bytes[0] = 9;
-    let tampered: FetchHeader = decode(&bytes).unwrap();
+    let tampered: FetchHeader = decode(&bytes).await.unwrap();
     assert!(matches!(
         tampered.validate(),
         Err(ProtocolError::Crypto(CryptoError::UnsupportedVersion(9)))

@@ -1,50 +1,56 @@
-use std::io::{Read, Write};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use crate::chunk::{CHUNK_LEN, Chunk};
 use crate::codec::{read_message, write_message};
 use crate::error::{ProtocolError, Result};
 use crate::message::{Request, Response};
 
-pub fn send_upload(writer: &mut impl Write, ciphertext: &[u8]) -> Result<()> {
+pub async fn send_upload<W>(writer: &mut W, ciphertext: &[u8]) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
     for piece in ciphertext.chunks(CHUNK_LEN) {
         let chunk = Chunk::new(piece.to_vec())?;
-        write_message(writer, &Request::UploadChunk(chunk))?;
+        write_message(writer, &Request::UploadChunk(chunk)).await?;
     }
     Ok(())
 }
 
-pub fn send_fetch(writer: &mut impl Write, ciphertext: &[u8]) -> Result<()> {
+pub async fn send_fetch<W>(writer: &mut W, ciphertext: &[u8]) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
     for piece in ciphertext.chunks(CHUNK_LEN) {
         let chunk = Chunk::new(piece.to_vec())?;
-        write_message(writer, &Response::Chunk(chunk))?;
+        write_message(writer, &Response::Chunk(chunk)).await?;
     }
     Ok(())
 }
 
-pub fn receive_upload(
-    reader: &mut impl Read,
-    sink: &mut impl Write,
-    expected_len: u64,
-) -> Result<()> {
+pub async fn receive_upload<R, W>(reader: &mut R, sink: &mut W, expected_len: u64) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut remaining = expected_len;
     while remaining > 0 {
-        match read_message(reader)? {
-            Request::UploadChunk(chunk) => remaining = store(&chunk, sink, remaining)?,
+        match read_message(reader).await? {
+            Request::UploadChunk(chunk) => remaining = store(&chunk, sink, remaining).await?,
             _ => return Err(ProtocolError::UnexpectedMessage),
         }
     }
     Ok(())
 }
 
-pub fn receive_fetch(
-    reader: &mut impl Read,
-    sink: &mut impl Write,
-    expected_len: u64,
-) -> Result<()> {
+pub async fn receive_fetch<R, W>(reader: &mut R, sink: &mut W, expected_len: u64) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut remaining = expected_len;
     while remaining > 0 {
-        match read_message(reader)? {
-            Response::Chunk(chunk) => remaining = store(&chunk, sink, remaining)?,
+        match read_message(reader).await? {
+            Response::Chunk(chunk) => remaining = store(&chunk, sink, remaining).await?,
             Response::Error(code) => return Err(ProtocolError::Remote(code)),
             _ => return Err(ProtocolError::UnexpectedMessage),
         }
@@ -52,7 +58,10 @@ pub fn receive_fetch(
     Ok(())
 }
 
-fn store(chunk: &Chunk, sink: &mut impl Write, remaining: u64) -> Result<u64> {
+async fn store<W>(chunk: &Chunk, sink: &mut W, remaining: u64) -> Result<u64>
+where
+    W: AsyncWrite + Unpin,
+{
     let bytes = chunk.as_bytes();
     if bytes.is_empty() {
         return Err(ProtocolError::EmptyChunk);
@@ -60,6 +69,6 @@ fn store(chunk: &Chunk, sink: &mut impl Write, remaining: u64) -> Result<u64> {
     if bytes.len() as u64 > remaining {
         return Err(ProtocolError::TransferOverflow);
     }
-    sink.write_all(bytes)?;
+    sink.write_all(bytes).await?;
     Ok(remaining - bytes.len() as u64)
 }
