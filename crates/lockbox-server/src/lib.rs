@@ -1,4 +1,6 @@
+pub mod adapters;
 mod config;
+pub mod core;
 mod error;
 pub mod session;
 pub mod transport;
