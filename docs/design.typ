@@ -66,15 +66,28 @@ This is the shared library, and both programs depend on it so they cannot disagr
 - the splitting of an encrypted file into pieces and putting it back together, with the safety checks on sizes
 - the limits listed in the table below
 
-It does not open sockets, and the only files it touches are key files. For messages it reads and writes whatever stream it is handed, using the standard blocking read and write calls. It is already built and tested, and it uses the dalek crates (ed25519-dalek and curve25519-dalek) for keys and signatures, chacha20poly1305 and sha2 for encryption, zeroize to wipe secrets from memory, serde with postcard for messages, base64 and rand, and thiserror for errors.
+It does not open sockets, and the only files it touches are key files. For messages it currently reads and writes whatever stream it is handed, using the standard blocking read and write calls. It should also offer plain functions that turn a message into bytes and bytes back into a message without any reading or writing, because the server needs them for WebSocket frames. It is already built and tested, and it uses the dalek crates (ed25519-dalek and curve25519-dalek) for keys and signatures, chacha20poly1305 and sha2 for encryption, zeroize to wipe secrets from memory, serde with postcard for messages, base64 and rand, and thiserror for errors.
 
 == lockbox-server
 
-The server is a long-running program. It does the following:
+The server is a long-running program. It is built in two layers, so that the rules of lockbox never depend on how a client connected.
 
-- listens on one address and serves many connections at the same time
+The core is the lockbox logic itself. It knows how to begin and finish an upload, a fetch and a delete, and it owns the index, the storage folder, the challenges and the expiry. It knows nothing about sockets, frames or message formats. It is one shared object with plain async methods, and every connection uses the same one.
+
+Around the core sit adapters, one per way of connecting. An adapter accepts clients, turns what they send into calls on the core, and turns the answers back into what that kind of client expects. There are two:
+
+- a TCP adapter, where messages follow each other on a byte stream, used by the command line client
+- a WebSocket adapter, where each binary frame holds exactly one message, meant for a browser client later
+
+Both carry the same messages, so they differ only in how a message is cut out of the incoming bytes. The core cannot tell them apart. HTTP is not planned. A browser can already reach the server over WebSocket, so HTTP would add a third adapter without adding anything users need. The layering leaves room for one if it is ever wanted.
+
+Because a client may not stay on one connection, the core keeps issued challenges in a table of its own instead of on the connection. Each entry is found by its random value, which the signed answer repeats, and it is removed when answered or when its minute is up.
+
+The server does the following:
+
+- listens on a TCP address and, if enabled, a WebSocket address, and serves many connections at the same time
 - reads requests one at a time and answers each one, and closes the connection if the peer sends something unexpected or goes quiet for too long
-- creates challenges and keeps each one only on the connection it was issued to, until it is answered or expires
+- creates challenges and keeps each one in the core's table until it is answered or expires
 - checks signatures and then checks permission: a recipient for a fetch, the owner for a delete
 - writes an upload straight into a file with a random name in its storage folder, so it never holds a whole file in memory, and checks that the amount received matches what was announced
 - keeps an index in memory of every stored file: its recipients, its owner, its expiry and where it lives on disk
@@ -90,10 +103,11 @@ The libraries it should use:
 - `ctrlc`, or the runtime's own signal handling, so that Ctrl+C lets the server stop and delete its files instead of leaving them behind
 - `thiserror` for the server's own error type
 - an async runtime, either `tokio` or `mio`, chosen by whoever builds the server (see below)
+- for the WebSocket adapter, `tokio-tungstenite` if the runtime is `tokio`
 
-The server needs an async runtime, and whoever builds it has to choose between `tokio` and `mio`. `tokio` is a complete runtime. It comes with async sockets, timers and task scheduling, so the server code stays short. `mio` is a thin layer over the operating system's event notifications. It gives non-blocking sockets and an event loop and nothing else, so the server would supply its own scheduling, timers and buffering. The choice should be made before the server is written and recorded here once it is made.
+The server needs an async runtime, and whoever builds it has to choose between `tokio` and `mio`. `tokio` is a complete runtime. It comes with async sockets, timers and task scheduling, so the server code stays short. `mio` is a thin layer over the operating system's event notifications. It gives non-blocking sockets and an event loop and nothing else, so the server would supply its own scheduling, timers and buffering. The WebSocket adapter tips the balance towards `tokio`, because `tokio-tungstenite` plugs straight into its sockets, while with `mio` the WebSocket handshake and framing would have to be wired in by hand. The choice should be made before the server is written and recorded here once it is made.
 
-The choice reaches into the protocol crate. Its functions for reading and writing messages and file pieces use the blocking standard `Read` and `Write` traits. Those work on plain threads, but not on async streams or non-blocking sockets. With either runtime, the implementor also has to decide how the protocol crate meets it. One way is to add async versions of those functions, which suits `tokio`. The other is to change them so the crate only turns bytes into messages and back, while the server does the socket reads and writes itself, which suits `mio`. The client can stay on the standard library's blocking sockets either way.
+The choice reaches into the protocol crate. Its functions for reading and writing messages and file pieces use the blocking standard `Read` and `Write` traits. Those work on plain threads, but not on async streams or non-blocking sockets. With either runtime, the implementor also has to decide how the protocol crate meets it. One way is to add async versions of those functions, which suits `tokio`. The other is to change them so the crate only turns bytes into messages and back, while the server does the socket reads and writes itself, which suits `mio`. The client can stay on the standard library's blocking sockets either way, because it only uses the TCP adapter.
 
 == lockbox-client
 
@@ -123,7 +137,7 @@ The libraries it should use:
   [Largest encrypted file], [64 MiB],
   [Recipients per file], [64],
   [Size of one piece of a file], [256 KiB],
-  [Largest single message], [1 MiB],
+  [Largest single message, also the WebSocket frame limit], [1 MiB],
   [Challenge lifetime], [60 seconds, used once],
   [File lifetime], [5 minutes at most],
 )
@@ -143,7 +157,9 @@ These are choices we made for the first version, and the README should list them
 = Possible later work
 
 - Encrypting in streams, so files can be larger than memory
-- TLS between client and server
+- TLS between client and server, which the WebSocket adapter needs anyway because browsers on a secure page only allow `wss://`
+- A browser client written in Rust and compiled to WebAssembly, reusing `lockbox-protocol` for messages and encryption. It must not be served by the lockbox server itself. A page the server sends could be changed by a dishonest server to copy keys or files, so it needs a separate host or a pinned build
+- An HTTP adapter, if a use for it appears
 - Storing the index in SQLite so files survive a restart
 - A list of keys allowed to upload
 - A way to revoke access before a recipient fetches
