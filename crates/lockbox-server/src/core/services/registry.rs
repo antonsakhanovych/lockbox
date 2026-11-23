@@ -79,6 +79,18 @@ where
         Ok(())
     }
 
+    pub fn expire(&self, file_id: FileId) -> bool {
+        let now = self.clock.now();
+        let mut records = self.records();
+        let expired = records
+            .get(&file_id)
+            .is_some_and(|record| record.header.expires_at <= now);
+        if expired {
+            records.remove(&file_id);
+        }
+        expired
+    }
+
     fn records(&self) -> MutexGuard<'_, HashMap<FileId, Record>> {
         self.records.lock().unwrap_or_else(PoisonError::into_inner)
     }

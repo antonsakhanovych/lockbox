@@ -2,7 +2,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::TestClock;
+use common::{RecordingScheduler, TestClock};
 use lockbox_protocol::chunk::CHUNK_LEN;
 use lockbox_protocol::crypto::envelope::Envelope;
 use lockbox_protocol::crypto::keys::generate_keypair;
@@ -24,7 +24,8 @@ struct World {
     challenges: Challenges<TestClock>,
     registry: Arc<Registry<TestClock>>,
     store: Arc<DiskStore>,
-    uploads: Uploads<TestClock, DiskStore>,
+    scheduler: Arc<RecordingScheduler>,
+    uploads: Uploads<TestClock, DiskStore, RecordingScheduler>,
 }
 
 async fn world() -> World {
@@ -32,8 +33,10 @@ async fn world() -> World {
     let clock = TestClock::at(START);
     let store = Arc::new(DiskStore::new(dir.path().to_path_buf()).await.unwrap());
     let registry = Arc::new(Registry::new(clock.clone()));
+    let scheduler = RecordingScheduler::new();
     World {
-        uploads: Uploads::new(registry.clone(), store.clone()),
+        uploads: Uploads::new(registry.clone(), store.clone(), scheduler.clone()),
+        scheduler,
         challenges: Challenges::new(clock.clone()),
         registry,
         store,
@@ -79,7 +82,7 @@ impl World {
         &self,
         owner: &SigningKey,
         header: FileHeader,
-    ) -> Result<Upload<TestClock, DiskStore>, CoreError> {
+    ) -> Result<Upload<TestClock, DiskStore, RecordingScheduler>, CoreError> {
         let who = self.verified(FileId::random(), Purpose::Upload, owner);
         self.uploads.begin(who, header).await
     }
@@ -367,4 +370,52 @@ async fn uploads_can_run_on_separate_tasks() {
         let (id, expected) = handle.await.unwrap();
         assert_eq!(w.stored(id).await, expected);
     }
+}
+
+#[tokio::test]
+async fn a_finished_upload_is_scheduled_for_expiry_with_the_granted_time() {
+    let w = world().await;
+    let owner = generate_keypair();
+    let prepared = prepare(&message(10), &[owner.verifying_key()], 10_000);
+    let (id, expires_at) = w.send_all(&owner, &prepared, 64).await;
+    assert_eq!(expires_at, START + MAX_LIFETIME_SECS);
+    assert_eq!(w.scheduler.calls(), vec![(id, expires_at)]);
+}
+
+#[tokio::test]
+async fn nothing_is_scheduled_before_the_upload_finishes() {
+    let w = world().await;
+    let owner = generate_keypair();
+    let prepared = prepare(&message(300), &[owner.verifying_key()], 60);
+    let mut upload = w.begin(&owner, prepared.header.clone()).await.unwrap();
+    for chunk in chunks(&prepared.ciphertext, 64) {
+        upload.write(&chunk).await.unwrap();
+    }
+    assert!(w.scheduler.calls().is_empty());
+}
+
+#[tokio::test]
+async fn an_abandoned_upload_is_not_scheduled() {
+    let w = world().await;
+    let owner = generate_keypair();
+    let prepared = prepare(&message(300), &[owner.verifying_key()], 60);
+    let mut upload = w.begin(&owner, prepared.header).await.unwrap();
+    let part = Chunk::new(prepared.ciphertext[..100].to_vec()).unwrap();
+    upload.write(&part).await.unwrap();
+    drop(upload);
+    assert!(w.scheduler.calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_denied_upload_is_not_scheduled() {
+    let w = world().await;
+    let owner = generate_keypair();
+    let prepared = prepare(&message(300), &[owner.verifying_key()], 30);
+    let mut upload = w.begin(&owner, prepared.header.clone()).await.unwrap();
+    for chunk in chunks(&prepared.ciphertext, 64) {
+        upload.write(&chunk).await.unwrap();
+    }
+    w.clock.advance(30);
+    assert!(upload.finish().await.is_err());
+    assert!(w.scheduler.calls().is_empty());
 }

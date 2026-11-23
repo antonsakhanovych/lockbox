@@ -5,24 +5,30 @@ use lockbox_protocol::{Chunk, FileHeader, FileId, ProtocolError};
 use tokio::io::AsyncWriteExt;
 
 use crate::core::error::{CoreError, Result};
-use crate::core::ports::driven::{Clock, FileStore, StoreError};
+use crate::core::ports::driven::{Clock, ExpiryScheduler, FileStore, StoreError};
 use crate::core::services::{Registry, Verified};
 
-pub struct Uploads<C, S> {
+pub struct Uploads<C, S, X> {
     registry: Arc<Registry<C>>,
     store: Arc<S>,
+    scheduler: Arc<X>,
 }
 
-impl<C, S> Uploads<C, S>
+impl<C, S, X> Uploads<C, S, X>
 where
     C: Clock,
     S: FileStore,
+    X: ExpiryScheduler,
 {
-    pub fn new(registry: Arc<Registry<C>>, store: Arc<S>) -> Self {
-        Self { registry, store }
+    pub fn new(registry: Arc<Registry<C>>, store: Arc<S>, scheduler: Arc<X>) -> Self {
+        Self {
+            registry,
+            store,
+            scheduler,
+        }
     }
 
-    pub async fn begin(&self, owner: Verified, header: FileHeader) -> Result<Upload<C, S>> {
+    pub async fn begin(&self, owner: Verified, header: FileHeader) -> Result<Upload<C, S, X>> {
         header.validate().map_err(|_| CoreError::Invalid)?;
         let writer = self.store.create(owner.file_id()).await?;
         Ok(Upload {
@@ -32,11 +38,12 @@ where
             writer,
             registry: self.registry.clone(),
             store: self.store.clone(),
+            scheduler: self.scheduler.clone(),
         })
     }
 }
 
-pub struct Upload<C, S>
+pub struct Upload<C, S, X>
 where
     S: FileStore,
 {
@@ -46,12 +53,14 @@ where
     writer: S::Writer,
     registry: Arc<Registry<C>>,
     store: Arc<S>,
+    scheduler: Arc<X>,
 }
 
-impl<C, S> Upload<C, S>
+impl<C, S, X> Upload<C, S, X>
 where
     C: Clock,
     S: FileStore,
+    X: ExpiryScheduler,
 {
     pub fn file_id(&self) -> FileId {
         self.owner.file_id()
@@ -77,7 +86,10 @@ where
         }
         self.writer.shutdown().await.map_err(StoreError::Io)?;
         match self.registry.register(&self.owner, self.header) {
-            Ok(expires_at) => Ok(expires_at),
+            Ok(expires_at) => {
+                self.scheduler.schedule(self.owner.file_id(), expires_at);
+                Ok(expires_at)
+            }
             Err(error) => {
                 let _ = self.store.remove(self.owner.file_id()).await;
                 Err(error)

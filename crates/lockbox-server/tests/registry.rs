@@ -322,3 +322,62 @@ async fn the_registry_can_be_shared_between_tasks() {
         assert!(w.registry.fetch_header(&fetch).is_ok());
     }
 }
+
+#[test]
+fn a_file_is_expired_exactly_when_its_time_comes() {
+    let w = world();
+    let owner = generate_keypair();
+    let id = w.upload(&owner, &[owner.verifying_key()], 60);
+    w.clock.advance(59);
+    assert!(!w.registry.expire(id));
+    w.clock.advance(1);
+    assert!(w.registry.expire(id));
+}
+
+#[test]
+fn expiring_removes_the_record() {
+    let w = world();
+    let owner = generate_keypair();
+    let id = w.upload(&owner, &[owner.verifying_key()], 60);
+    w.clock.advance(60);
+    w.registry.expire(id);
+    assert!(!w.registry.expire(id));
+}
+
+#[test]
+fn a_file_that_has_not_expired_is_kept() {
+    let w = world();
+    let owner = generate_keypair();
+    let id = w.upload(&owner, &[owner.verifying_key()], 60);
+    assert!(!w.registry.expire(id));
+    let fetch = w.verified(id, Purpose::Fetch, &owner);
+    assert!(w.registry.fetch_header(&fetch).is_ok());
+}
+
+#[test]
+fn expiring_an_unknown_file_does_nothing() {
+    let w = world();
+    assert!(!w.registry.expire(FileId::random()));
+}
+
+#[test]
+fn expiring_a_deleted_file_does_nothing() {
+    let w = world();
+    let owner = generate_keypair();
+    let id = w.upload(&owner, &[owner.verifying_key()], 60);
+    let delete = w.verified(id, Purpose::Delete, &owner);
+    w.registry.delete(&delete).unwrap();
+    w.clock.advance(60);
+    assert!(!w.registry.expire(id));
+}
+
+#[test]
+fn expiring_one_file_leaves_the_others() {
+    let w = world();
+    let owner = generate_keypair();
+    let short = w.upload(&owner, &[owner.verifying_key()], 60);
+    let long = w.upload(&owner, &[owner.verifying_key()], 120);
+    w.clock.advance(60);
+    assert!(w.registry.expire(short));
+    assert!(!w.registry.expire(long));
+}
