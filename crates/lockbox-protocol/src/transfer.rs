@@ -35,7 +35,7 @@ where
     let mut remaining = expected_len;
     while remaining > 0 {
         match read_message(reader).await? {
-            Request::UploadChunk(chunk) => remaining = store(&chunk, sink, remaining).await?,
+            Request::UploadChunk(chunk) => remaining = write_chunk(&chunk, sink, remaining).await?,
             _ => return Err(ProtocolError::UnexpectedMessage),
         }
     }
@@ -50,7 +50,7 @@ where
     let mut remaining = expected_len;
     while remaining > 0 {
         match read_message(reader).await? {
-            Response::Chunk(chunk) => remaining = store(&chunk, sink, remaining).await?,
+            Response::Chunk(chunk) => remaining = write_chunk(&chunk, sink, remaining).await?,
             Response::Error(code) => return Err(ProtocolError::Remote(code)),
             _ => return Err(ProtocolError::UnexpectedMessage),
         }
@@ -58,7 +58,7 @@ where
     Ok(())
 }
 
-async fn store<W>(chunk: &Chunk, sink: &mut W, remaining: u64) -> Result<u64>
+pub async fn write_chunk<W>(chunk: &Chunk, sink: &mut W, remaining: u64) -> Result<u64>
 where
     W: AsyncWrite + Unpin,
 {
