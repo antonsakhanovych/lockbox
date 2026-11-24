@@ -7,9 +7,11 @@ use lockbox_protocol::crypto::envelope::Envelope;
 use lockbox_protocol::crypto::keys::generate_keypair;
 use lockbox_protocol::crypto::{SigningKey, VerifyingKey};
 use lockbox_protocol::message::MAX_LIFETIME_SECS;
-use lockbox_protocol::{FileHeader, FileId, Purpose, SignedRequest};
+use lockbox_protocol::{FileHeader, FileId, SignedRequest};
 use lockbox_server::core::error::CoreError;
-use lockbox_server::core::services::{Challenges, Registry, Verified};
+use lockbox_server::core::services::{
+    Challenges, ForDelete, ForFetch, ForUpload, Intent, Registry, Verified,
+};
 
 const START: u64 = 1_000_000;
 
@@ -29,15 +31,18 @@ fn world() -> World {
 }
 
 impl World {
-    fn verified(&self, id: FileId, purpose: Purpose, key: &SigningKey) -> Verified {
-        let challenge = self.challenges.issue(id, purpose);
+    fn verified<I>(&self, id: FileId, key: &SigningKey) -> Verified<I>
+    where
+        I: Intent,
+    {
+        let challenge = self.challenges.issue(id, I::PURPOSE);
         let proof = SignedRequest::answer(&challenge, key);
-        self.challenges.verify(challenge, &proof, purpose).unwrap()
+        self.challenges.verify(challenge, &proof).unwrap()
     }
 
     fn upload(&self, owner: &SigningKey, recipients: &[VerifyingKey], lifetime: u64) -> FileId {
         let id = FileId::random();
-        let who = self.verified(id, Purpose::Upload, owner);
+        let who = self.verified::<ForUpload>(id, owner);
         self.registry
             .register(&who, header(recipients, START + lifetime))
             .unwrap();
@@ -65,7 +70,7 @@ fn registering_returns_the_requested_expiry_when_it_is_within_the_limit() {
     let w = world();
     let owner = generate_keypair();
     let id = FileId::random();
-    let who = w.verified(id, Purpose::Upload, &owner);
+    let who = w.verified::<ForUpload>(id, &owner);
     let granted = w
         .registry
         .register(&who, header(&[owner.verifying_key()], START + 120))
@@ -78,7 +83,7 @@ fn registering_clamps_the_expiry_to_the_maximum_lifetime() {
     let w = world();
     let owner = generate_keypair();
     let id = FileId::random();
-    let who = w.verified(id, Purpose::Upload, &owner);
+    let who = w.verified::<ForUpload>(id, &owner);
     let granted = w
         .registry
         .register(&who, header(&[owner.verifying_key()], START + 10_000))
@@ -92,11 +97,11 @@ fn the_clamped_expiry_is_what_recipients_see() {
     let owner = generate_keypair();
     let recipient = generate_keypair();
     let id = FileId::random();
-    let who = w.verified(id, Purpose::Upload, &owner);
+    let who = w.verified::<ForUpload>(id, &owner);
     w.registry
         .register(&who, header(&[recipient.verifying_key()], START + 10_000))
         .unwrap();
-    let fetch = w.verified(id, Purpose::Fetch, &recipient);
+    let fetch = w.verified::<ForFetch>(id, &recipient);
     let granted = w.registry.fetch_header(&fetch).unwrap();
     assert_eq!(granted.expires_at, START + MAX_LIFETIME_SECS);
 }
@@ -105,7 +110,7 @@ fn the_clamped_expiry_is_what_recipients_see() {
 fn registering_an_expiry_that_is_not_in_the_future_is_denied() {
     let w = world();
     let owner = generate_keypair();
-    let who = w.verified(FileId::random(), Purpose::Upload, &owner);
+    let who = w.verified::<ForUpload>(FileId::random(), &owner);
     assert!(denied(
         w.registry
             .register(&who, header(&[owner.verifying_key()], START))
@@ -116,7 +121,7 @@ fn registering_an_expiry_that_is_not_in_the_future_is_denied() {
 fn registering_an_invalid_header_is_denied() {
     let w = world();
     let owner = generate_keypair();
-    let who = w.verified(FileId::random(), Purpose::Upload, &owner);
+    let who = w.verified::<ForUpload>(FileId::random(), &owner);
     let mut bad = header(&[owner.verifying_key()], START + 60);
     bad.ciphertext_len = 0;
     assert!(denied(w.registry.register(&who, bad)));
@@ -127,8 +132,8 @@ fn registering_the_same_file_id_twice_is_denied() {
     let w = world();
     let owner = generate_keypair();
     let id = FileId::random();
-    let first = w.verified(id, Purpose::Upload, &owner);
-    let second = w.verified(id, Purpose::Upload, &owner);
+    let first = w.verified::<ForUpload>(id, &owner);
+    let second = w.verified::<ForUpload>(id, &owner);
     let h = header(&[owner.verifying_key()], START + 60);
     w.registry.register(&first, h.clone()).unwrap();
     assert!(denied(w.registry.register(&second, h)));
@@ -140,7 +145,7 @@ fn a_listed_recipient_may_fetch() {
     let owner = generate_keypair();
     let recipient = generate_keypair();
     let id = w.upload(&owner, &[recipient.verifying_key()], 60);
-    let fetch = w.verified(id, Purpose::Fetch, &recipient);
+    let fetch = w.verified::<ForFetch>(id, &recipient);
     let granted = w.registry.fetch_header(&fetch).unwrap();
     assert_eq!(granted.recipient.recipient(), &recipient.verifying_key());
     assert_eq!(granted.expires_at, START + 60);
@@ -154,7 +159,7 @@ fn every_listed_recipient_gets_their_own_header() {
     let second = generate_keypair();
     let id = w.upload(&owner, &[first.verifying_key(), second.verifying_key()], 60);
     for key in [&first, &second] {
-        let fetch = w.verified(id, Purpose::Fetch, key);
+        let fetch = w.verified::<ForFetch>(id, key);
         let granted = w.registry.fetch_header(&fetch).unwrap();
         assert_eq!(granted.recipient.recipient(), &key.verifying_key());
     }
@@ -166,7 +171,7 @@ fn a_key_that_is_not_listed_may_not_fetch() {
     let owner = generate_keypair();
     let recipient = generate_keypair();
     let id = w.upload(&owner, &[recipient.verifying_key()], 60);
-    let stranger = w.verified(id, Purpose::Fetch, &generate_keypair());
+    let stranger = w.verified::<ForFetch>(id, &generate_keypair());
     assert!(denied(w.registry.fetch_header(&stranger)));
 }
 
@@ -176,7 +181,7 @@ fn the_owner_may_not_fetch_unless_listed() {
     let owner = generate_keypair();
     let recipient = generate_keypair();
     let id = w.upload(&owner, &[recipient.verifying_key()], 60);
-    let fetch = w.verified(id, Purpose::Fetch, &owner);
+    let fetch = w.verified::<ForFetch>(id, &owner);
     assert!(denied(w.registry.fetch_header(&fetch)));
 }
 
@@ -184,7 +189,7 @@ fn the_owner_may_not_fetch_unless_listed() {
 fn fetching_an_unknown_file_is_denied() {
     let w = world();
     let key = generate_keypair();
-    let fetch = w.verified(FileId::random(), Purpose::Fetch, &key);
+    let fetch = w.verified::<ForFetch>(FileId::random(), &key);
     assert!(denied(w.registry.fetch_header(&fetch)));
 }
 
@@ -195,7 +200,7 @@ fn fetching_is_denied_once_the_file_has_expired() {
     let recipient = generate_keypair();
     let id = w.upload(&owner, &[recipient.verifying_key()], 60);
     w.clock.advance(60);
-    let fetch = w.verified(id, Purpose::Fetch, &recipient);
+    let fetch = w.verified::<ForFetch>(id, &recipient);
     assert!(denied(w.registry.fetch_header(&fetch)));
 }
 
@@ -206,7 +211,7 @@ fn fetching_still_works_just_before_expiry() {
     let recipient = generate_keypair();
     let id = w.upload(&owner, &[recipient.verifying_key()], 60);
     w.clock.advance(59);
-    let fetch = w.verified(id, Purpose::Fetch, &recipient);
+    let fetch = w.verified::<ForFetch>(id, &recipient);
     assert!(w.registry.fetch_header(&fetch).is_ok());
 }
 
@@ -217,7 +222,7 @@ fn fetching_can_be_repeated() {
     let recipient = generate_keypair();
     let id = w.upload(&owner, &[recipient.verifying_key()], 60);
     for _ in 0..2 {
-        let fetch = w.verified(id, Purpose::Fetch, &recipient);
+        let fetch = w.verified::<ForFetch>(id, &recipient);
         assert!(w.registry.fetch_header(&fetch).is_ok());
     }
 }
@@ -227,7 +232,7 @@ fn the_owner_may_delete() {
     let w = world();
     let owner = generate_keypair();
     let id = w.upload(&owner, &[owner.verifying_key()], 60);
-    let delete = w.verified(id, Purpose::Delete, &owner);
+    let delete = w.verified::<ForDelete>(id, &owner);
     assert!(w.registry.delete(&delete).is_ok());
 }
 
@@ -236,9 +241,9 @@ fn a_deleted_file_can_no_longer_be_fetched() {
     let w = world();
     let owner = generate_keypair();
     let id = w.upload(&owner, &[owner.verifying_key()], 60);
-    let delete = w.verified(id, Purpose::Delete, &owner);
+    let delete = w.verified::<ForDelete>(id, &owner);
     w.registry.delete(&delete).unwrap();
-    let fetch = w.verified(id, Purpose::Fetch, &owner);
+    let fetch = w.verified::<ForFetch>(id, &owner);
     assert!(denied(w.registry.fetch_header(&fetch)));
 }
 
@@ -247,8 +252,8 @@ fn deleting_twice_is_denied() {
     let w = world();
     let owner = generate_keypair();
     let id = w.upload(&owner, &[owner.verifying_key()], 60);
-    let first = w.verified(id, Purpose::Delete, &owner);
-    let second = w.verified(id, Purpose::Delete, &owner);
+    let first = w.verified::<ForDelete>(id, &owner);
+    let second = w.verified::<ForDelete>(id, &owner);
     w.registry.delete(&first).unwrap();
     assert!(denied(w.registry.delete(&second)));
 }
@@ -259,7 +264,7 @@ fn a_recipient_may_not_delete() {
     let owner = generate_keypair();
     let recipient = generate_keypair();
     let id = w.upload(&owner, &[recipient.verifying_key()], 60);
-    let delete = w.verified(id, Purpose::Delete, &recipient);
+    let delete = w.verified::<ForDelete>(id, &recipient);
     assert!(denied(w.registry.delete(&delete)));
 }
 
@@ -269,9 +274,9 @@ fn a_refused_delete_leaves_the_file_in_place() {
     let owner = generate_keypair();
     let recipient = generate_keypair();
     let id = w.upload(&owner, &[recipient.verifying_key()], 60);
-    let delete = w.verified(id, Purpose::Delete, &recipient);
+    let delete = w.verified::<ForDelete>(id, &recipient);
     let _ = w.registry.delete(&delete);
-    let fetch = w.verified(id, Purpose::Fetch, &recipient);
+    let fetch = w.verified::<ForFetch>(id, &recipient);
     assert!(w.registry.fetch_header(&fetch).is_ok());
 }
 
@@ -279,7 +284,7 @@ fn a_refused_delete_leaves_the_file_in_place() {
 fn deleting_an_unknown_file_is_denied() {
     let w = world();
     let key = generate_keypair();
-    let delete = w.verified(FileId::random(), Purpose::Delete, &key);
+    let delete = w.verified::<ForDelete>(FileId::random(), &key);
     assert!(denied(w.registry.delete(&delete)));
 }
 
@@ -289,7 +294,7 @@ fn deleting_an_expired_file_is_denied() {
     let owner = generate_keypair();
     let id = w.upload(&owner, &[owner.verifying_key()], 60);
     w.clock.advance(60);
-    let delete = w.verified(id, Purpose::Delete, &owner);
+    let delete = w.verified::<ForDelete>(id, &owner);
     assert!(denied(w.registry.delete(&delete)));
 }
 
@@ -299,9 +304,9 @@ fn files_do_not_affect_each_other() {
     let owner = generate_keypair();
     let first = w.upload(&owner, &[owner.verifying_key()], 60);
     let second = w.upload(&owner, &[owner.verifying_key()], 60);
-    let delete = w.verified(first, Purpose::Delete, &owner);
+    let delete = w.verified::<ForDelete>(first, &owner);
     w.registry.delete(&delete).unwrap();
-    let fetch = w.verified(second, Purpose::Fetch, &owner);
+    let fetch = w.verified::<ForFetch>(second, &owner);
     assert!(w.registry.fetch_header(&fetch).is_ok());
 }
 
@@ -318,7 +323,7 @@ async fn the_registry_can_be_shared_between_tasks() {
         .collect();
     for handle in handles {
         let id = handle.await.unwrap();
-        let fetch = w.verified(id, Purpose::Fetch, &owner);
+        let fetch = w.verified::<ForFetch>(id, &owner);
         assert!(w.registry.fetch_header(&fetch).is_ok());
     }
 }
@@ -350,7 +355,7 @@ fn a_file_that_has_not_expired_is_kept() {
     let owner = generate_keypair();
     let id = w.upload(&owner, &[owner.verifying_key()], 60);
     assert!(!w.registry.expire(id));
-    let fetch = w.verified(id, Purpose::Fetch, &owner);
+    let fetch = w.verified::<ForFetch>(id, &owner);
     assert!(w.registry.fetch_header(&fetch).is_ok());
 }
 
@@ -365,7 +370,7 @@ fn expiring_a_deleted_file_does_nothing() {
     let w = world();
     let owner = generate_keypair();
     let id = w.upload(&owner, &[owner.verifying_key()], 60);
-    let delete = w.verified(id, Purpose::Delete, &owner);
+    let delete = w.verified::<ForDelete>(id, &owner);
     w.registry.delete(&delete).unwrap();
     w.clock.advance(60);
     assert!(!w.registry.expire(id));

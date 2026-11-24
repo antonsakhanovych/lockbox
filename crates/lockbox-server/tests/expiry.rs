@@ -6,10 +6,12 @@ use common::TestClock;
 use lockbox_protocol::crypto::envelope::Envelope;
 use lockbox_protocol::crypto::keys::generate_keypair;
 use lockbox_protocol::crypto::{SigningKey, VerifyingKey};
-use lockbox_protocol::{FileHeader, FileId, Purpose, SignedRequest};
+use lockbox_protocol::{FileHeader, FileId, SignedRequest};
 use lockbox_server::adapters::driven::DiskStore;
 use lockbox_server::core::ports::driven::{FileStore, StoreError};
-use lockbox_server::core::services::{Challenges, Expiry, Fetches, Registry, Verified};
+use lockbox_server::core::services::{
+    Challenges, Expiry, Fetches, ForDelete, ForFetch, ForUpload, Intent, Registry, Verified,
+};
 use tempfile::{TempDir, tempdir};
 use tokio::io::AsyncWriteExt;
 
@@ -54,10 +56,13 @@ fn prepare(recipients: &[VerifyingKey], lifetime: u64) -> (FileHeader, Vec<u8>) 
 }
 
 impl World {
-    fn verified(&self, id: FileId, purpose: Purpose, key: &SigningKey) -> Verified {
-        let challenge = self.challenges.issue(id, purpose);
+    fn verified<I>(&self, id: FileId, key: &SigningKey) -> Verified<I>
+    where
+        I: Intent,
+    {
+        let challenge = self.challenges.issue(id, I::PURPOSE);
         let proof = SignedRequest::answer(&challenge, key);
-        self.challenges.verify(challenge, &proof, purpose).unwrap()
+        self.challenges.verify(challenge, &proof).unwrap()
     }
 
     async fn put(&self, owner: &SigningKey, lifetime: u64) -> (FileId, Vec<u8>) {
@@ -66,7 +71,7 @@ impl World {
         let mut writer = self.store.create(id).await.unwrap();
         writer.write_all(&ciphertext).await.unwrap();
         writer.shutdown().await.unwrap();
-        let who = self.verified(id, Purpose::Upload, owner);
+        let who = self.verified::<ForUpload>(id, owner);
         self.registry.register(&who, header).unwrap();
         (id, ciphertext)
     }
@@ -76,7 +81,7 @@ impl World {
     }
 
     fn registered(&self, id: FileId, key: &SigningKey) -> bool {
-        let who = self.verified(id, Purpose::Fetch, key);
+        let who = self.verified::<ForFetch>(id, key);
         self.registry.fetch_header(&who).is_ok()
     }
 }
@@ -144,7 +149,7 @@ async fn a_file_deleted_earlier_is_not_touched_again() {
     let w = world().await;
     let owner = generate_keypair();
     let (id, _) = w.put(&owner, 60).await;
-    let delete = w.verified(id, Purpose::Delete, &owner);
+    let delete = w.verified::<ForDelete>(id, &owner);
     w.registry.delete(&delete).unwrap();
     w.store.remove(id).await.unwrap();
     w.clock.advance(60);
@@ -168,7 +173,7 @@ async fn a_fetch_in_progress_finishes_after_the_file_expires() {
     let w = world().await;
     let owner = generate_keypair();
     let (id, ciphertext) = w.put(&owner, 60).await;
-    let who = w.verified(id, Purpose::Fetch, &owner);
+    let who = w.verified::<ForFetch>(id, &owner);
     let mut fetch = w.fetches.begin(who).await.unwrap();
     w.clock.advance(60);
     w.expiry.expire(id).await.unwrap();

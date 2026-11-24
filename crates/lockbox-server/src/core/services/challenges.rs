@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use lockbox_protocol::crypto::VerifyingKey;
@@ -5,14 +6,16 @@ use lockbox_protocol::{Challenge, FileId, Purpose, SignedRequest};
 
 use crate::core::error::{CoreError, Result};
 use crate::core::ports::driven::Clock;
+use crate::core::services::Intent;
 
 #[derive(Debug)]
-pub struct Verified {
+pub struct Verified<I> {
     file_id: FileId,
     key: VerifyingKey,
+    intent: PhantomData<I>,
 }
 
-impl Verified {
+impl<I> Verified<I> {
     pub fn file_id(&self) -> FileId {
         self.file_id
     }
@@ -38,18 +41,17 @@ where
         Challenge::new(file_id, purpose, self.clock.now())
     }
 
-    pub fn verify(
-        &self,
-        challenge: Challenge,
-        proof: &SignedRequest,
-        purpose: Purpose,
-    ) -> Result<Verified> {
+    pub fn verify<I>(&self, challenge: Challenge, proof: &SignedRequest) -> Result<Verified<I>>
+    where
+        I: Intent,
+    {
         proof
-            .check(&challenge, purpose, self.clock.now())
+            .check(&challenge, I::PURPOSE, self.clock.now())
             .map_err(|_| CoreError::Denied)?;
         Ok(Verified {
             file_id: challenge.file_id(),
             key: proof.public_key,
+            intent: PhantomData,
         })
     }
 }

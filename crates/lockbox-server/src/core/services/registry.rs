@@ -8,7 +8,7 @@ use lockbox_protocol::{FetchHeader, FileHeader, FileId};
 
 use crate::core::error::{CoreError, Result};
 use crate::core::ports::driven::Clock;
-use crate::core::services::Verified;
+use crate::core::services::{ForDelete, ForFetch, ForUpload, Verified};
 
 struct Record {
     owner: VerifyingKey,
@@ -31,7 +31,7 @@ where
         }
     }
 
-    pub fn register(&self, owner: &Verified, header: FileHeader) -> Result<u64> {
+    pub fn register(&self, owner: &Verified<ForUpload>, header: FileHeader) -> Result<u64> {
         header.validate().map_err(|_| CoreError::Denied)?;
         let now = self.clock.now();
         if header.expires_at <= now {
@@ -54,7 +54,7 @@ where
         }
     }
 
-    pub fn fetch_header(&self, requester: &Verified) -> Result<FetchHeader> {
+    pub fn fetch_header(&self, requester: &Verified<ForFetch>) -> Result<FetchHeader> {
         let records = self.records();
         let record = records
             .get(&requester.file_id())
@@ -66,7 +66,7 @@ where
             .ok_or(CoreError::Denied)
     }
 
-    pub fn delete(&self, requester: &Verified) -> Result<()> {
+    pub fn delete(&self, requester: &Verified<ForDelete>) -> Result<()> {
         let now = self.clock.now();
         let mut records = self.records();
         let owned = records.get(&requester.file_id()).is_some_and(|record| {

@@ -10,7 +10,7 @@ use lockbox_protocol::crypto::keys::generate_keypair;
 use lockbox_protocol::{FileHeader, FileId, Purpose, SignedRequest};
 use lockbox_server::adapters::driven::{DelayScheduler, DiskStore};
 use lockbox_server::core::ports::driven::{ExpiryScheduler, FileStore, StoreError};
-use lockbox_server::core::services::{Challenges, Expiry, Registry};
+use lockbox_server::core::services::{Challenges, Expiry, ForDelete, ForUpload, Registry};
 use tempfile::{TempDir, tempdir};
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
@@ -64,7 +64,7 @@ impl World {
         let proof = SignedRequest::answer(&challenge, owner);
         let who = self
             .challenges
-            .verify(challenge, &proof, Purpose::Upload)
+            .verify::<ForUpload>(challenge, &proof)
             .unwrap();
         self.registry.register(&who, header).unwrap();
         id
@@ -145,10 +145,7 @@ async fn a_file_deleted_before_its_time_does_not_stop_the_worker() {
     w.schedule(gone, START + 60).await;
     let challenge = w.challenges.issue(gone, Purpose::Delete);
     let proof = SignedRequest::answer(&challenge, &owner);
-    let who = w
-        .challenges
-        .verify(challenge, &proof, Purpose::Delete)
-        .unwrap();
+    let who = w.challenges.verify::<ForDelete>(challenge, &proof).unwrap();
     w.registry.delete(&who).unwrap();
     w.store.remove(gone).await.unwrap();
     let other = w.put(&owner, 90).await;

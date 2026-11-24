@@ -8,11 +8,13 @@ use lockbox_protocol::crypto::envelope::Envelope;
 use lockbox_protocol::crypto::keys::generate_keypair;
 use lockbox_protocol::crypto::{SigningKey, VerifyingKey};
 use lockbox_protocol::message::MAX_LIFETIME_SECS;
-use lockbox_protocol::{Chunk, FileHeader, FileId, Purpose, SignedRequest};
+use lockbox_protocol::{Chunk, FileHeader, FileId, SignedRequest};
 use lockbox_server::adapters::driven::DiskStore;
 use lockbox_server::core::error::CoreError;
 use lockbox_server::core::ports::driven::{FileStore, StoreError};
-use lockbox_server::core::services::{Challenges, Registry, Upload, Uploads, Verified};
+use lockbox_server::core::services::{
+    Challenges, ForDelete, ForFetch, ForUpload, Intent, Registry, Upload, Uploads, Verified,
+};
 use tempfile::{TempDir, tempdir};
 use tokio::io::AsyncReadExt;
 
@@ -72,10 +74,13 @@ fn chunks(bytes: &[u8], size: usize) -> Vec<Chunk> {
 }
 
 impl World {
-    fn verified(&self, id: FileId, purpose: Purpose, key: &SigningKey) -> Verified {
-        let challenge = self.challenges.issue(id, purpose);
+    fn verified<I>(&self, id: FileId, key: &SigningKey) -> Verified<I>
+    where
+        I: Intent,
+    {
+        let challenge = self.challenges.issue(id, I::PURPOSE);
         let proof = SignedRequest::answer(&challenge, key);
-        self.challenges.verify(challenge, &proof, purpose).unwrap()
+        self.challenges.verify(challenge, &proof).unwrap()
     }
 
     async fn begin(
@@ -83,7 +88,7 @@ impl World {
         owner: &SigningKey,
         header: FileHeader,
     ) -> Result<Upload<TestClock, DiskStore, RecordingScheduler>, CoreError> {
-        let who = self.verified(FileId::random(), Purpose::Upload, owner);
+        let who = self.verified::<ForUpload>(FileId::random(), owner);
         self.uploads.begin(who, header).await
     }
 
@@ -156,7 +161,7 @@ async fn a_finished_upload_can_be_fetched_by_a_recipient() {
     let recipient = generate_keypair();
     let prepared = prepare(&message(10), &[recipient.verifying_key()], 60);
     let (id, _) = w.send_all(&owner, &prepared, 64).await;
-    let fetch = w.verified(id, Purpose::Fetch, &recipient);
+    let fetch = w.verified::<ForFetch>(id, &recipient);
     assert!(w.registry.fetch_header(&fetch).is_ok());
 }
 
@@ -166,7 +171,7 @@ async fn a_finished_upload_can_be_deleted_by_the_owner() {
     let owner = generate_keypair();
     let prepared = prepare(&message(10), &[owner.verifying_key()], 60);
     let (id, _) = w.send_all(&owner, &prepared, 64).await;
-    let delete = w.verified(id, Purpose::Delete, &owner);
+    let delete = w.verified::<ForDelete>(id, &owner);
     assert!(w.registry.delete(&delete).is_ok());
 }
 
@@ -188,7 +193,7 @@ async fn the_file_id_is_the_one_the_challenge_was_for() {
     let w = world().await;
     let owner = generate_keypair();
     let id = FileId::random();
-    let who = w.verified(id, Purpose::Upload, &owner);
+    let who = w.verified::<ForUpload>(id, &owner);
     let prepared = prepare(&message(10), &[owner.verifying_key()], 60);
     let upload = w.uploads.begin(who, prepared.header).await.unwrap();
     assert_eq!(upload.file_id(), id);
@@ -201,7 +206,7 @@ async fn an_invalid_header_is_rejected_before_anything_is_stored() {
     let mut prepared = prepare(&message(10), &[owner.verifying_key()], 60);
     prepared.header.ciphertext_len = 0;
     let id = FileId::random();
-    let who = w.verified(id, Purpose::Upload, &owner);
+    let who = w.verified::<ForUpload>(id, &owner);
     let result = w.uploads.begin(who, prepared.header).await;
     assert!(matches!(result, Err(CoreError::Invalid)));
     assert!(matches!(w.store.open(id).await, Err(StoreError::NotFound)));
@@ -287,7 +292,7 @@ async fn an_abandoned_upload_is_never_registered() {
     let part = Chunk::new(prepared.ciphertext[..100].to_vec()).unwrap();
     upload.write(&part).await.unwrap();
     drop(upload);
-    let fetch = w.verified(id, Purpose::Fetch, &recipient);
+    let fetch = w.verified::<ForFetch>(id, &recipient);
     assert!(matches!(
         w.registry.fetch_header(&fetch),
         Err(CoreError::Denied)
@@ -304,10 +309,10 @@ async fn a_file_is_not_registered_until_the_upload_finishes() {
     for chunk in chunks(&prepared.ciphertext, 64) {
         upload.write(&chunk).await.unwrap();
     }
-    let fetch = w.verified(id, Purpose::Fetch, &owner);
+    let fetch = w.verified::<ForFetch>(id, &owner);
     assert!(w.registry.fetch_header(&fetch).is_err());
     upload.finish().await.unwrap();
-    let fetch = w.verified(id, Purpose::Fetch, &owner);
+    let fetch = w.verified::<ForFetch>(id, &owner);
     assert!(w.registry.fetch_header(&fetch).is_ok());
 }
 

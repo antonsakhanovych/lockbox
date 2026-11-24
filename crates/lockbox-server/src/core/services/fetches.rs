@@ -6,7 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::core::error::{CoreError, Result};
 use crate::core::ports::driven::{Clock, FileStore, StoreError};
-use crate::core::services::{Registry, Verified};
+use crate::core::services::{ForFetch, Registry, Verified};
 
 pub struct Fetches<C, S> {
     registry: Arc<Registry<C>>,
@@ -22,7 +22,7 @@ where
         Self { registry, store }
     }
 
-    pub async fn begin(&self, requester: Verified) -> Result<Fetch<S::Reader>> {
+    pub async fn begin(&self, requester: Verified<ForFetch>) -> Result<Fetch<S::Reader>> {
         let header = self.registry.fetch_header(&requester)?;
         let reader = match self.store.open(requester.file_id()).await {
             Ok(reader) => reader,

@@ -6,7 +6,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::core::error::{CoreError, Result};
 use crate::core::ports::driven::{Clock, ExpiryScheduler, FileStore, StoreError};
-use crate::core::services::{Registry, Verified};
+use crate::core::services::{ForUpload, Registry, Verified};
 
 pub struct Uploads<C, S, X> {
     registry: Arc<Registry<C>>,
@@ -28,7 +28,11 @@ where
         }
     }
 
-    pub async fn begin(&self, owner: Verified, header: FileHeader) -> Result<Upload<C, S, X>> {
+    pub async fn begin(
+        &self,
+        owner: Verified<ForUpload>,
+        header: FileHeader,
+    ) -> Result<Upload<C, S, X>> {
         header.validate().map_err(|_| CoreError::Invalid)?;
         let writer = self.store.create(owner.file_id()).await?;
         Ok(Upload {
@@ -47,7 +51,7 @@ pub struct Upload<C, S, X>
 where
     S: FileStore,
 {
-    owner: Verified,
+    owner: Verified<ForUpload>,
     header: FileHeader,
     remaining: u64,
     writer: S::Writer,

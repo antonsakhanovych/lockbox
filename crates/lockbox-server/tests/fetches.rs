@@ -7,11 +7,13 @@ use lockbox_protocol::chunk::CHUNK_LEN;
 use lockbox_protocol::crypto::envelope::Envelope;
 use lockbox_protocol::crypto::keys::generate_keypair;
 use lockbox_protocol::crypto::{SigningKey, VerifyingKey};
-use lockbox_protocol::{FileHeader, FileId, Purpose, SignedRequest};
+use lockbox_protocol::{FileHeader, FileId, SignedRequest};
 use lockbox_server::adapters::driven::DiskStore;
 use lockbox_server::core::error::CoreError;
 use lockbox_server::core::ports::driven::{FileStore, StoreError};
-use lockbox_server::core::services::{Challenges, Fetch, Fetches, Registry, Verified};
+use lockbox_server::core::services::{
+    Challenges, Fetch, Fetches, ForDelete, ForFetch, ForUpload, Intent, Registry, Verified,
+};
 use tempfile::{TempDir, tempdir};
 use tokio::io::AsyncWriteExt;
 
@@ -65,10 +67,13 @@ fn message(len: usize) -> Vec<u8> {
 }
 
 impl World {
-    fn verified(&self, id: FileId, purpose: Purpose, key: &SigningKey) -> Verified {
-        let challenge = self.challenges.issue(id, purpose);
+    fn verified<I>(&self, id: FileId, key: &SigningKey) -> Verified<I>
+    where
+        I: Intent,
+    {
+        let challenge = self.challenges.issue(id, I::PURPOSE);
         let proof = SignedRequest::answer(&challenge, key);
-        self.challenges.verify(challenge, &proof, purpose).unwrap()
+        self.challenges.verify(challenge, &proof).unwrap()
     }
 
     async fn publish(&self, owner: &SigningKey, prepared: &Prepared, stored: &[u8]) -> FileId {
@@ -76,7 +81,7 @@ impl World {
         let mut writer = self.store.create(id).await.unwrap();
         writer.write_all(stored).await.unwrap();
         writer.shutdown().await.unwrap();
-        let who = self.verified(id, Purpose::Upload, owner);
+        let who = self.verified::<ForUpload>(id, owner);
         self.registry
             .register(&who, prepared.header.clone())
             .unwrap();
@@ -92,7 +97,7 @@ impl World {
         id: FileId,
         key: &SigningKey,
     ) -> Result<Fetch<<DiskStore as FileStore>::Reader>, CoreError> {
-        let who = self.verified(id, Purpose::Fetch, key);
+        let who = self.verified::<ForFetch>(id, key);
         self.fetches.begin(who).await
     }
 }
@@ -264,7 +269,7 @@ async fn a_deleted_file_is_denied() {
     let owner = generate_keypair();
     let prepared = prepare(&message(10), &[owner.verifying_key()], 60);
     let id = w.put(&owner, &prepared).await;
-    let delete = w.verified(id, Purpose::Delete, &owner);
+    let delete = w.verified::<ForDelete>(id, &owner);
     w.registry.delete(&delete).unwrap();
     w.store.remove(id).await.unwrap();
     assert!(matches!(w.begin(id, &owner).await, Err(CoreError::Denied)));
@@ -288,7 +293,7 @@ async fn a_fetch_in_progress_survives_the_file_being_deleted() {
     let id = w.put(&owner, &prepared).await;
     let mut fetch = w.begin(id, &owner).await.unwrap();
     fetch.next_chunk().await.unwrap();
-    let delete = w.verified(id, Purpose::Delete, &owner);
+    let delete = w.verified::<ForDelete>(id, &owner);
     w.registry.delete(&delete).unwrap();
     w.store.remove(id).await.unwrap();
     let rest = drain(&mut fetch).await.concat();
