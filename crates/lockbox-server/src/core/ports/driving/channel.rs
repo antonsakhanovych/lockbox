@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use lockbox_protocol::{ProtocolError, Request, Response};
+use lockbox_protocol::{ErrorCode, ProtocolError, Request, Response};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ChannelError {
@@ -25,6 +25,18 @@ impl From<ProtocolError> for ChannelError {
         match error {
             ProtocolError::Io(error) => Self::Io(error),
             other => Self::Codec(other),
+        }
+    }
+}
+
+impl From<&ChannelError> for ErrorCode {
+    fn from(error: &ChannelError) -> Self {
+        match error {
+            ChannelError::Io(_) => Self::Internal,
+            ChannelError::Codec(
+                ProtocolError::Encode(_) | ProtocolError::MessageTooLarge { .. },
+            ) => Self::Internal,
+            ChannelError::Codec(_) => Self::InvalidRequest,
         }
     }
 }
