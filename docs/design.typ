@@ -81,13 +81,13 @@ Around the core sit adapters, one per way of connecting. An adapter accepts clie
 
 Both carry the same messages, so they differ only in how a message is cut out of the incoming bytes. The core cannot tell them apart. HTTP is not planned. A browser can already reach the server over WebSocket, so HTTP would add a third adapter without adding anything users need. The layering leaves room for one if it is ever wanted.
 
-Because a client may not stay on one connection, the core keeps issued challenges in a table of its own instead of on the connection. Each entry is found by its random value, which the signed answer repeats, and it is removed when answered or when its minute is up.
+Each connection has a session that holds its pending challenge and unfinished upload. A challenge names one file and operation, lasts one minute, and is consumed when answered. A client that reconnects must ask for a new challenge. Sessions share the core services, so completed files can be fetched or deleted from another connection.
 
 The server does the following:
 
 - listens on a TCP address and, if enabled, a WebSocket address, and serves many connections at the same time
 - reads requests one at a time and answers each one, and closes the connection if the peer sends something unexpected or goes quiet for too long
-- creates challenges and keeps each one in the core's table until it is answered or expires
+- creates challenges and keeps at most one pending challenge per session until it is answered, expires or the connection closes
 - checks signatures and then checks permission: a recipient for a fetch, the owner for a delete
 - writes an upload straight into a file with a random name in its storage folder, so it never holds a whole file in memory, and checks that the amount received matches what was announced
 - keeps an index in memory of every stored file: its recipients, its owner, its expiry and where it lives on disk

@@ -1,14 +1,22 @@
 use std::future::Future;
+use std::sync::Arc;
 
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
+use crate::adapters::driving::StreamChannel;
+use crate::app::{Ports, Services};
 use crate::error::Result;
+use crate::session::Session;
 
 /// Accepts connections on `listener` until `shutdown` completes.
 /// Each connection runs in a separate task. Open connections are dropped on shutdown.
-pub async fn serve(listener: TcpListener, handle_shutdown: impl Future<Output = ()>) -> Result<()> {
+pub async fn serve<P: Ports + 'static>(
+    listener: TcpListener,
+    services: Arc<Services<P>>,
+    handle_shutdown: impl Future<Output = ()>,
+) -> Result<()> {
     info!(address = %listener.local_addr()?, "listening");
 
     tokio::pin!(handle_shutdown);
@@ -18,22 +26,34 @@ pub async fn serve(listener: TcpListener, handle_shutdown: impl Future<Output = 
     loop {
         tokio::select! {
             () = &mut handle_shutdown => break,
+
             accepted = listener.accept() => match accepted {
                 Ok((stream, peer)) => {
                     info!(%peer, "connection opened");
-                    connections.spawn(handle_connection(stream));
+
+                    let session = Session::new(services.clone(), StreamChannel::new(stream));
+
+                    connections.spawn(async move {
+                        if let Err(error) = session.run().await {
+                            warn!(%peer, %error, "session failed");
+                        }
+
+                        info!(%peer, "connection closed");
+                    });
                 }
                 Err(error) => warn!(%error, "failed to accept a connection"),
             },
-            Some(_) = connections.join_next() => {}
+
+            Some(result) = connections.join_next() => {
+                if let Err(error) = result {
+                    warn!(%error, "connection task failed");
+                }
+            }
         }
     }
 
     info!("shutting down");
+    connections.shutdown().await;
 
     Ok(())
-}
-
-async fn handle_connection(_stream: TcpStream) {
-    todo!()
 }
