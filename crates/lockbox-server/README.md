@@ -8,6 +8,8 @@ Run it from the workspace root:
 cargo run -p lockbox-server -- --listen-addr 127.0.0.1:5625 --storage-dir lockbox-data
 ```
 
+Use the [client commands](../lockbox-client/README.md) to generate keys and upload, fetch, or delete files.
+
 Each connection runs a `Session` over a `Channel`. Sessions share the services assembled in `app`, including the file registry and expiry scheduler. The binary runs the expiry worker alongside the TCP listener.
 
 A connection handles one transaction at a time. Successful transactions return to the idle state, so a client can reuse its connection.
