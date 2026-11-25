@@ -1,4 +1,5 @@
 pub mod adapters;
+pub mod app;
 mod config;
 pub mod core;
 mod error;
