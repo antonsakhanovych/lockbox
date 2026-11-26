@@ -4,10 +4,10 @@ use std::time::Duration;
 use clap::Parser;
 use lockbox_protocol::codec::{read_message, write_message};
 use lockbox_protocol::{Request, Response};
-use lockbox_server::Config;
 use lockbox_server::adapters::driven::{DiskStore, SystemClock};
 use lockbox_server::app::assemble;
 use lockbox_server::transport::tcp::serve;
+use lockbox_server::{Config, TransportKind};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -209,4 +209,35 @@ async fn tcp_shutdown_closes_sessions_stops_expiry_and_removes_finished_and_part
             Err(lockbox_protocol::ProtocolError::ConnectionClosed)
         ));
     }
+}
+
+#[test]
+fn both_transports_are_served_by_default() {
+    let config = Config::parse_from(["lockbox-server"]);
+
+    assert!(config.serves(TransportKind::Tcp));
+    assert!(config.serves(TransportKind::WebSocket));
+    assert_eq!(config.ws_listen_addr.to_string(), "127.0.0.1:5626");
+}
+
+#[test]
+fn a_single_transport_can_be_selected() {
+    let tcp = Config::parse_from(["lockbox-server", "--transport", "tcp"]);
+    let ws = Config::parse_from(["lockbox-server", "--transport", "ws"]);
+
+    assert!(tcp.serves(TransportKind::Tcp) && !tcp.serves(TransportKind::WebSocket));
+    assert!(ws.serves(TransportKind::WebSocket) && !ws.serves(TransportKind::Tcp));
+}
+
+#[test]
+fn transports_can_be_listed_together() {
+    let config = Config::parse_from(["lockbox-server", "--transport", "tcp,ws"]);
+
+    assert!(config.serves(TransportKind::Tcp));
+    assert!(config.serves(TransportKind::WebSocket));
+}
+
+#[test]
+fn an_unknown_transport_is_rejected() {
+    assert!(Config::try_parse_from(["lockbox-server", "--transport", "carrier-pigeon"]).is_err());
 }

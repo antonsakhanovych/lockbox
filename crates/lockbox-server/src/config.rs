@@ -1,17 +1,33 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
-/// Command line options for the server
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum TransportKind {
+    Tcp,
+    #[value(name = "ws")]
+    WebSocket,
+}
+
 #[derive(Clone, Debug, Parser)]
 #[command(version, about = "Lockbox server")]
 pub struct Config {
-    /// Address to listen on
-    #[arg(long, default_value = "127.0.0.1:5625")] // 5625 = LOCK on keypad 😎
+    #[arg(long, value_enum, value_delimiter = ',', default_value = "tcp,ws")]
+    pub transport: Vec<TransportKind>,
+
+    #[arg(long, default_value = "127.0.0.1:5625")]
     pub listen_addr: SocketAddr,
 
-    /// Folder for stored files
+    #[arg(long, default_value = "127.0.0.1:5626")]
+    pub ws_listen_addr: SocketAddr,
+
     #[arg(long, default_value = "lockbox-data")]
     pub storage_dir: PathBuf,
+}
+
+impl Config {
+    pub fn serves(&self, kind: TransportKind) -> bool {
+        self.transport.contains(&kind)
+    }
 }
