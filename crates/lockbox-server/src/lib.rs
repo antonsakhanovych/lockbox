@@ -6,5 +6,5 @@ mod error;
 pub mod session;
 pub mod transport;
 
-pub use config::Config;
+pub use config::{Config, TransportKind};
 pub use error::{Result, ServerError};
